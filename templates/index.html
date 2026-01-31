@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ekstrak Teks Biru dari PDF</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 480px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #1a1a1a;
+    }
+    h1 {
+      font-size: 1.25rem;
+      margin-bottom: 0.5rem;
+      color: #0d47a1;
+    }
+    p {
+      color: #555;
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
+    form {
+      border: 2px dashed #90caf9;
+      border-radius: 8px;
+      padding: 2rem;
+      background: #e3f2fd;
+      margin-bottom: 1rem;
+    }
+    input[type="file"] {
+      display: block;
+      width: 100%;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    button {
+      background: #1976d2;
+      color: white;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 6px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:hover { background: #1565c0; }
+    button:disabled {
+      background: #90a4ae;
+      cursor: not-allowed;
+    }
+    #loading {
+      margin-top: 1rem;
+      padding: 1rem;
+      border-radius: 8px;
+      background: #e3f2fd;
+      color: #1565c0;
+      font-size: 0.9rem;
+      display: none;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    #loading.tampil { display: flex; }
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid #90caf9;
+      border-top-color: #1976d2;
+      border-radius: 50%;
+      animation: putar 0.8s linear infinite;
+    }
+    @keyframes putar {
+      to { transform: rotate(360deg); }
+    }
+    #pesan {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    #pesan.error { background: #ffebee; color: #c62828; display: block; }
+    #pesan.sukses { background: #e8f5e9; color: #2e7d32; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Ekstrak Teks Biru dari PDF</h1>
+  <p>Unggah file PDF. Hanya teks yang berwarna biru akan dibaca dan digabung menjadi satu PDF baru.</p>
+
+  <form id="form" enctype="multipart/form-data">
+    <label for="file">Pilih file PDF</label>
+    <input type="file" id="file" name="file" accept=".pdf" required>
+    <button type="submit" id="btn">Ekstrak teks biru → unduh PDF</button>
+  </form>
+
+  <div id="loading" aria-live="polite">
+    <span class="spinner" aria-hidden="true"></span>
+    <span>Memproses PDF…</span>
+  </div>
+  <div id="pesan" role="alert"></div>
+
+  <script>
+    const form = document.getElementById("form");
+    const fileInput = document.getElementById("file");
+    const btn = document.getElementById("btn");
+    const loading = document.getElementById("loading");
+    const pesan = document.getElementById("pesan");
+
+    function tampilPesan(teks, isError) {
+      pesan.textContent = teks;
+      pesan.className = isError ? "error" : "sukses";
+      pesan.style.display = "block";
+    }
+
+    function tampilLoading(show) {
+      loading.classList.toggle("tampil", show);
+      if (!show) pesan.style.display = "none";
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const file = fileInput.files[0];
+      if (!file) {
+        tampilPesan("Pilih file PDF terlebih dahulu.", true);
+        return;
+      }
+      btn.disabled = true;
+      tampilLoading(true);
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch("/api/extract-blue", {
+          method: "POST",
+          body: fd,
+        });
+        tampilLoading(false);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const msg = data.error || res.statusText;
+          const hint = data.hint ? " " + data.hint : "";
+          tampilPesan(msg + hint, true);
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "teks_biru.pdf";
+        a.click();
+        URL.revokeObjectURL(url);
+        tampilPesan("PDF berhasil dibuat. Unduhan dimulai.", false);
+      } catch (err) {
+        tampilLoading(false);
+        tampilPesan("Gagal: " + err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
