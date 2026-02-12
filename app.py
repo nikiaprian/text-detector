@@ -93,14 +93,20 @@ def _flush_paragraph(current: list[dict], out: list[dict]) -> None:
 def extract_blue_text_from_pdf(input_path: str) -> list[dict]:
     """Baca PDF, kembalikan list paragraf biru. Satu paragraf = satu blok teks
     (banyak baris digabung). Span dalam blok yang sama digabung jadi satu item.
+    Nomor halaman diambil dari halaman yang sedang diproses (page_num).
     """
     doc = fitz.open(input_path)
     blue_spans = []
+    current_paragraph = []
+    in_blue_paragraph = False
     for page_num in range(len(doc)):
-        page = doc[page_num]
-        blocks = _as_list(page.get_text("dict", sort=True).get("blocks"))
+        # Flush sisa paragraf dari halaman sebelumnya (jangan campur halaman)
+        _flush_paragraph(current_paragraph, blue_spans)
         current_paragraph = []
         in_blue_paragraph = False
+
+        page = doc[page_num]
+        blocks = _as_list(page.get_text("dict", sort=True).get("blocks"))
         for block in blocks:
             if not isinstance(block, dict) or block.get("type") != 0:
                 continue
@@ -125,22 +131,51 @@ def extract_blue_text_from_pdf(input_path: str) -> list[dict]:
                         in_blue_paragraph = False
             _flush_paragraph(current_paragraph, blue_spans)
             current_paragraph = []
+    _flush_paragraph(current_paragraph, blue_spans)
     doc.close()
     return blue_spans
 
 
-def create_pdf_with_blue_text(blue_spans: list[dict], output_path: str) -> None:
+# Opsi format output PDF: spasi antar baris & antar paragraf
+OUTPUT_STYLES = {
+    "paragraph": {"line_height": 12, "line_gap": 1, "para_gap": 4},   # standar, enak dibaca
+    "compact": {"line_height": 10, "line_gap": 0, "para_gap": 1},      # dempet, cocok list/tabel
+    "lines": {"line_height": 12, "line_gap": 1, "para_gap": 2},        # baris per baris, cocok tabel
+}
+
+
+# Spasi seperti Shift+Enter (baris menempel): tinggi baris = size * multiplier
+TIGHT_LINE_MULT = 1.05  # sangat ketat, baris nyaris rapat
+
+
+def create_pdf_with_blue_text(
+    blue_spans: list[dict], output_path: str, output_style: str = "paragraph"
+) -> None:
     """Buat PDF baru yang hanya berisi teks biru (tetap warna biru).
-    Pakai insert_text (point) per baris agar teks pasti tampil.
+    output_style: 'paragraph' (standar), 'compact' (rapat), 'lines' (baris per baris untuk tabel).
+    Jika semua teks dari satu halaman, spasi otomatis sangat ketat (single spacing).
     """
+    pages_used = {item.get("page", 1) for item in blue_spans}
+    single_page = len(pages_used) <= 1
+    # Compact atau satu halaman → spasi ketat seperti Shift+Enter (baris menempel)
+    use_tight_spacing = single_page or (output_style == "compact")
+
+    style = OUTPUT_STYLES.get(output_style, OUTPUT_STYLES["paragraph"])
+    line_height = style["line_height"]
+    line_gap = style["line_gap"]
+    para_gap = style["para_gap"]
+    if use_tight_spacing:
+        line_gap = 0
+        para_gap = 0
+
     doc = fitz.open()
     blue_pdf = (0, 0, 1)
-    line_height = 14
     margin = 50
     y = margin
     page_width = 595
     page_height = 842
     page = doc.new_page(width=page_width, height=page_height)
+    prev_source_page = None  # halaman sumber item sebelumnya
     for item in blue_spans:
         text = item.get("text") or ""
         if not text.strip():
@@ -149,12 +184,30 @@ def create_pdf_with_blue_text(blue_spans: list[dict], output_path: str) -> None:
             size = min(float(item.get("size", 12)), 12)
         except (TypeError, ValueError):
             size = 12
-        label = f"[hal {item.get('page', 1)}] "
+        # Ketat (Shift+Enter): tinggi baris = size * 1.05 agar baris menempel
+        if use_tight_spacing:
+            line_step = size * TIGHT_LINE_MULT
+            empty_line_step = size * TIGHT_LINE_MULT * 0.4
+        else:
+            line_step = line_height + line_gap
+            empty_line_step = line_height * 0.5
+
+        item_page = item.get("page", 1)
+        # Satu spasi antar halaman sumber: [hal 4] ... [hal 5] diberi jarak
+        if prev_source_page is not None and item_page != prev_source_page:
+            y += line_step
+            min_line = size * (TIGHT_LINE_MULT + 0.3) if use_tight_spacing else line_height
+            if y > page_height - margin - min_line:
+                page = doc.new_page(width=page_width, height=page_height)
+                y = margin
+        prev_source_page = item_page
+
+        label = f"[hal {item_page}] "
         full = label + text
         for line in full.split("\n"):
             line = line.strip()
             if not line:
-                y += line_height * 0.5
+                y += empty_line_step
                 continue
             # Pastikan hanya karakter yang aman untuk font helv (Latin)
             line_safe = "".join(c if ord(c) < 256 else "?" for c in line)
@@ -163,12 +216,14 @@ def create_pdf_with_blue_text(blue_spans: list[dict], output_path: str) -> None:
                 page.insert_text(pt, line_safe, fontsize=size, color=blue_pdf, fontname="helv")
             except Exception:
                 page.insert_text(pt, line_safe, fontsize=size, color=blue_pdf)
-            y += line_height + 2
-            if y > page_height - margin - line_height:
+            y += line_step
+            min_line = size * (TIGHT_LINE_MULT + 0.3) if use_tight_spacing else line_height
+            if y > page_height - margin - min_line:
                 page = doc.new_page(width=page_width, height=page_height)
                 y = margin
-        y += 4
-        if y > page_height - margin - line_height:
+        y += para_gap
+        min_line = size * (TIGHT_LINE_MULT + 0.3) if use_tight_spacing else line_height
+        if y > page_height - margin - min_line:
             page = doc.new_page(width=page_width, height=page_height)
             y = margin
     doc.save(output_path, garbage=1, deflate=False)
@@ -200,10 +255,14 @@ def extract_blue():
                 "error": "Tidak ada teks warna biru ditemukan di PDF ini.",
                 "hint": "Pastikan teks benar-benar menggunakan warna biru (bukan hitam/abu-abu)."
             }), 422
+        output_style = (request.form.get("output_style") or "paragraph").strip().lower()
+        if output_style not in OUTPUT_STYLES:
+            output_style = "paragraph"
+
         buf = BytesIO()
         out_path = tempfile.mktemp(suffix=".pdf")
         try:
-            create_pdf_with_blue_text(blue_spans, out_path)
+            create_pdf_with_blue_text(blue_spans, out_path, output_style=output_style)
             with open(out_path, "rb") as f:
                 buf.write(f.read())
         finally:
@@ -230,4 +289,4 @@ def extract_blue():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)

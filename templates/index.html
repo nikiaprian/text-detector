@@ -82,6 +82,11 @@
     }
     #pesan.error { background: #ffebee; color: #c62828; display: block; }
     #pesan.sukses { background: #e8f5e9; color: #2e7d32; display: block; }
+    label[for="output_style"] { display: block; margin-top: 1rem; margin-bottom: 0.35rem; }
+    #output_style {
+      width: 100%; padding: 0.5rem; font-size: 0.9rem;
+      border: 1px solid #90caf9; border-radius: 6px; margin-bottom: 1rem;
+    }
   </style>
 </head>
 <body>
@@ -91,6 +96,12 @@
   <form id="form" enctype="multipart/form-data">
     <label for="file">Pilih file PDF</label>
     <input type="file" id="file" name="file" accept=".pdf" required>
+    <label for="output_style">Format output</label>
+    <select id="output_style" name="output_style">
+      <option value="paragraph">Paragraf — spasi wajar, enak dibaca</option>
+      <option value="compact">Compact — rapat, cocok list/tabel</option>
+      <option value="lines">Baris per baris — cocok isi tabel (satu baris = satu entri)</option>
+    </select>
     <button type="submit" id="btn">Ekstrak teks biru → unduh PDF</button>
   </form>
 
@@ -129,6 +140,7 @@
       tampilLoading(true);
       const fd = new FormData();
       fd.append("file", file);
+      fd.append("output_style", document.getElementById("output_style").value);
       try {
         const res = await fetch("/api/extract-blue", {
           method: "POST",
