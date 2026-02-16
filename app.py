@@ -2,6 +2,7 @@
 Backend Flask: upload PDF, ekstrak teks warna biru, generate PDF output.
 """
 import os
+import re
 import tempfile
 from io import BytesIO
 from flask import Flask, request, send_file, render_template, jsonify
@@ -230,10 +231,11 @@ KEPEMILIKAN_SUBCOLUMNS = (
     "Saham Gabungan Per Investor",
     "Persentase Kepemilikan Per Investor (%)",
 )
-# Template header baris kedua (nama kolom): dipakai tetap, isi datanya dari PDF.
-# Urutan: kolom identitas, Status, lalu per periode Kepemilikan 3 subkolom, terakhir Perubahan.
+# Template header baris kedua (nama kolom): 17 kolom fix sesuai spesifikasi.
+# Urutan: No, Kode Efek, ... Status, lalu 2× (Jumlah Saham, Saham Gabungan, Persentase), Perubahan.
 TEMPLATE_HEADER_FIXED = (
-    "No Kode Efek",
+    "No",
+    "Kode Efek",
     "Nama Emiten",
     "Nama Pemegang Rekening Efek",
     "Nama Pemegang Saham",
@@ -244,6 +246,29 @@ TEMPLATE_HEADER_FIXED = (
     "Domisili",
     "Status (Lokal/Asing)",
 )
+# Template header 18 kolom tetap (untuk tabel standar 2 periode Kepemilikan)
+TEMPLATE_HEADER_18 = (
+    "No",
+    "Kode Efek",
+    "Nama Emiten",
+    "Nama Pemegang Rekening Efek",
+    "Nama Pemegang Saham",
+    "Nama Rekening Efek",
+    "Alamat",
+    "Alamat (Lanjutan)",
+    "Kebangsaan",
+    "Domisili",
+    "Status (Lokal/Asing)",
+    "Jumlah Saham",
+    "Saham Gabungan Per Investor",
+    "Persentase Kepemilikan Per Investor (%)",
+    "Jumlah Saham",
+    "Saham Gabungan Per Investor",
+    "Persentase Kepemilikan Per Investor (%)",
+    "Perubahan",
+)
+# Pola untuk pisah "No" dan "Kode Efek" dari sel pertama (e.g. "143 ATLA" -> No=143, Kode Efek=ATLA)
+NO_KODE_EFEK_PATTERN = re.compile(r"^\s*(\d+)\s+(.*)$", re.DOTALL)
 # Judul dokumen (satu baris panjang) bukan header tabel: header punya banyak kolom
 MIN_HEADER_CELLS = 5
 MIN_HEADER_KEYWORD_MATCHES = 3
@@ -264,9 +289,9 @@ CORE_HEADER_KEYWORDS = (
 def build_template_header_row(num_cols: int) -> list[str]:
     """
     Buat baris header tetap (template) untuk num_cols kolom.
-    Urutan: kolom tetap (No Kode Efek ... Status), lalu blok Kepemilikan (3 subkolom per periode), lalu Perubahan.
+    Urutan: 11 kolom tetap (No, Kode Efek, ... Status), lalu tiap blok Kepemilikan 3 subkolom, lalu Perubahan.
     """
-    d = max(0, (num_cols - 11) // 3)
+    d = max(0, (num_cols - 12) // 3)  # 11 + 3*d + 1 = num_cols
     row = list(TEMPLATE_HEADER_FIXED) + list(KEPEMILIKAN_SUBCOLUMNS) * d + ["Perubahan"]
     if len(row) < num_cols:
         row.extend(f"Kolom {i + 1}" for i in range(len(row), num_cols))
@@ -275,31 +300,78 @@ def build_template_header_row(num_cols: int) -> list[str]:
     return row
 
 
+# Pola tanggal di header Kepemilikan (DD-MMM-YYYY)
+KEPEMILIKAN_DATE_PATTERN = re.compile(
+    r"Kepemilikan\s+Per\s*(\d{2}-[A-Z]{3}-\d{4})",
+    re.IGNORECASE,
+)
+
+
+def _split_kepemilikan_header_top(header_top: list[dict], num_cols: int) -> list[dict]:
+    """
+    Pisahkan entri header_top yang berisi dua tanggal (mis. "Kepemilikan Per 28-JAN-2026
+    Kepemilikan Per 29-JAN-2026") menjadi dua entri terpisah agar tampilan sesuai PDF.
+    """
+    out = []
+    for h in header_top:
+        c = h.get("colspan", 1)
+        text = (h.get("text") or "").strip()
+        text_lower = text.lower()
+        if "kepemilikan" not in text_lower or c < 4:
+            out.append(h)
+            continue
+        # Cari semua "Kepemilikan Per DD-MMM-YYYY"
+        dates = KEPEMILIKAN_DATE_PATTERN.findall(text)
+        if len(dates) >= 2 and c >= 4:
+            # Ada dua tanggal: bagi colspan jadi 2 (masing-masing 3 subkolom)
+            per_block = max(3, c // 2)
+            out.append({"text": f"Kepemilikan Per {dates[0]}", "colspan": per_block})
+            out.append({"text": f"Kepemilikan Per {dates[1]}", "colspan": c - per_block})
+        else:
+            out.append(h)
+    # Pastikan total colspan tetap num_cols
+    total = sum(x.get("colspan", 1) for x in out)
+    if total != num_cols and out:
+        if total > num_cols:
+            while total > num_cols and out:
+                last = out[-1]
+                cc = last.get("colspan", 1)
+                if cc > 1:
+                    last["colspan"] = cc - 1
+                    total -= 1
+                else:
+                    out.pop()
+                    total -= 1
+        if total < num_cols:
+            out.append({"text": "", "colspan": num_cols - total})
+    return out
+
+
 def build_template_header_row_from_header_top(header_top: list[dict]) -> list[str]:
     """
-    Bangun baris header (nama kolom) dari struktur header_top agar setiap blok
-    'Kepemilikan Per' punya 3 subkolom: Jumlah Saham, Saham Gabungan Per Investor,
+    Bangun baris header (nama kolom) dari struktur header_top.
+    Setiap blok 'Kepemilikan Per' selalu dapat 3 subkolom: Jumlah Saham, Saham Gabungan Per Investor,
     Persentase Kepemilikan Per Investor (%).
     """
     row = []
     fixed_used = 0
     total_cols = sum(h.get("colspan", 1) for h in header_top)
     subcols = list(KEPEMILIKAN_SUBCOLUMNS)
+    n_fixed = len(TEMPLATE_HEADER_FIXED)  # 11: No, Kode Efek, ..., Status
 
     for i, h in enumerate(header_top):
         c = h.get("colspan", 1)
         text = (h.get("text") or "").strip().lower()
 
-        if fixed_used < 10:
-            # Kolom tetap: No Kode Efek ... Status (Lokal/Asing)
-            n_fixed = min(c, 10 - fixed_used)
-            row.extend(list(TEMPLATE_HEADER_FIXED)[fixed_used : fixed_used + n_fixed])
-            fixed_used += n_fixed
-            remaining = c - n_fixed
+        if fixed_used < n_fixed:
+            n = min(c, n_fixed - fixed_used)
+            row.extend(list(TEMPLATE_HEADER_FIXED)[fixed_used : fixed_used + n])
+            fixed_used += n
+            remaining = c - n
             if remaining <= 0:
                 continue
-            # Sisa span ini (setelah kolom ke-10) = blok Kepemilikan
-            if "kepemilikan" in text and remaining >= 1:
+            # Sisa span ini = blok Kepemilikan (selalu 3 nama)
+            if "kepemilikan" in text:
                 row.extend(subcols[: min(remaining, 3)])
                 if remaining > 3:
                     row.extend([""] * (remaining - 3))
@@ -308,7 +380,6 @@ def build_template_header_row_from_header_top(header_top: list[dict]) -> list[st
             continue
 
         if "kepemilikan" in text:
-            # Selalu tampilkan 3 subkolom: Jumlah Saham, Saham Gabungan, Persentase
             row.extend(subcols[: min(c, 3)])
             if c > 3:
                 row.extend([""] * (c - 3))
@@ -467,23 +538,7 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         blue_only = [s for s in all_spans if s.get("is_blue")]
         return build_table_from_spans(blue_only)
 
-    # Pecah sel header yang menggabungkan "Jumlah Saham" + "Saham Gabungan" + "Persentase" jadi 3 kolom
-    new_boundaries = []
-    new_header_cells = []
-    for j, (cx0, cx1) in enumerate(column_boundaries):
-        cell = header_cells[j] if j < len(header_cells) else ""
-        if _is_merged_kepemilikan_cell(cell):
-            w = (cx1 - cx0) / 3
-            new_boundaries.append((cx0, cx0 + w))
-            new_boundaries.append((cx0 + w, cx0 + 2 * w))
-            new_boundaries.append((cx0 + 2 * w, cx1))
-            new_header_cells.extend(KEPEMILIKAN_SUBCOLUMNS)
-        else:
-            new_boundaries.append((cx0, cx1))
-            new_header_cells.append(cell)
-    column_boundaries = new_boundaries
-    header_cells = new_header_cells
-
+    # (Fungsi Kepemilikan Per dinonaktifkan: tidak memecah sel merged Kepemilikan jadi 3 kolom)
     num_cols = len(column_boundaries)
     # Hilangkan celah antar kolom: bagi wilayah antara batas kiri/kanan setiap dua kolom
     # agar teks yang jatuh di celah tidak salah masuk ke kolom kiri.
@@ -613,44 +668,6 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         cells = [_normalize_cell(c) for c in cells]
         data_rows.append(cells)
 
-    # Perluas blok Kepemilikan yang hanya 2 kolom (Status+Perubahan) jadi 3 kolom
-    # (Jumlah Saham, Saham Gabungan Per Investor, Persentase) agar template selalu benar.
-    new_header_top = []
-    col_offset = 0
-    need_expand = False
-    for h in header_top:
-        c = h.get("colspan", 1)
-        text = (h.get("text") or "").strip().lower()
-        if "kepemilikan" in text and c == 2:
-            new_header_top.append({"text": h.get("text", ""), "colspan": 3})
-            col_offset += 3
-            need_expand = True
-        else:
-            new_header_top.append(h)
-            col_offset += c
-
-    if need_expand:
-        def _expand_row(row: list[str]) -> list[str]:
-            out = []
-            col_idx = 0
-            for h in header_top:
-                c = h.get("colspan", 1)
-                text = (h.get("text") or "").strip().lower()
-                if "kepemilikan" in text and c == 2:
-                    out.append(row[col_idx] if col_idx < len(row) else "")
-                    out.append("")  # kolom kosong untuk Saham Gabungan atau Persentase
-                    out.append(row[col_idx + 1] if col_idx + 1 < len(row) else "")
-                    col_idx += 2
-                else:
-                    for k in range(c):
-                        out.append(row[col_idx + k] if col_idx + k < len(row) else "")
-                    col_idx += c
-            return out
-
-        data_rows = [_expand_row(r) for r in data_rows]
-        header_top = new_header_top
-        num_cols = col_offset
-
     # Fallback 1: baris header utama punya sel berisi "Kepemilikan"
     if not header_top and header_cells:
         row_lower = " ".join(c.lower() for c in header_cells)
@@ -671,52 +688,62 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
             if sum(c.get("colspan", 1) for c in merged_top) == num_cols:
                 header_top = merged_top
 
-    # Fallback 2 (sintetis): deteksi pola 3 kolom (Jumlah Saham, Saham Gabungan, Persentase Kepemilikan)
-    # lalu buat baris atas "Kepemilikan Per" dengan colspan 3 per grup - tidak bergantung ekstraksi PDF
-    if not header_top and header_cells:
-        def _cell(j):
-            return ((header_cells[j] if j < len(header_cells) else "") or "").lower()
+    # Pisah kolom "No" dan "Kode Efek": sel pertama (e.g. "143 ATLA") -> No="143", Kode Efek="ATLA"
+    def _split_no_kode_efek(cell: str) -> tuple[str, str]:
+        if not cell or not isinstance(cell, str):
+            return ("", "")
+        m = NO_KODE_EFEK_PATTERN.match(cell.strip())
+        if m:
+            return (m.group(1).strip(), m.group(2).strip())
+        return ("", cell.strip())
 
-        synthetic = []
-        j = 0
-        group_num = 0
-        while j < num_cols:
-            if j + 3 <= num_cols:
-                a, b, c = _cell(j), _cell(j + 1), _cell(j + 2)
-                # Pola: kolom 1 = Jumlah Saham, 2 = Saham Gabungan..., 3 = Persentase Kepemilikan...
-                like1 = "jumlah" in a and "saham" in a
-                like2 = "gabungan" in b or ("saham" in b and "investor" in b)
-                like3 = "persentase" in c or "kepemilikan" in c
-                if like1 and (like2 or like3):
-                    group_num += 1
-                    synthetic.append({"text": "Kepemilikan Per" + (f" (periode {group_num})" if group_num > 1 else ""), "colspan": 3})
-                    j += 3
-                    continue
-            synthetic.append({"text": "", "colspan": 1})
-            j += 1
-        if group_num > 0 and sum(c.get("colspan", 1) for c in synthetic) == num_cols:
-            header_top = synthetic
+    _rows = []
+    for row in data_rows:
+        no, kode = _split_no_kode_efek(row[0] if row else "")
+        _rows.append([no, kode] + list(row[1:]))
+    data_rows = _rows
+    num_cols += 1
+    if header_top:
+        header_top = [{"text": "", "colspan": 1}] + header_top
 
-    # Fallback 3: tabel punya "Status" dan "Perubahan" tapi sub-kolom Kepemilikan tidak terpisah
-    # -> baris atas: kosong untuk kolom awal, "Kepemilikan Per" colspan 3 untuk 3 kolom sebelum "Perubahan"
-    if not header_top and num_cols >= 10 and header_cells:
-        row_lower = " ".join((c or "").lower() for c in header_cells)
-        if "status" in row_lower and "perubahan" in row_lower and num_cols >= 4:
-            header_top = [{"text": "", "colspan": 1} for _ in range(num_cols - 4)]
-            header_top.append({"text": "Kepemilikan Per", "colspan": 3})
-            header_top.append({"text": "", "colspan": 1})
+    # PDF hanya memberi ~12 kolom; nilai untuk kolom 12–18 sering gabung di kolom Status & berikutnya.
+    # Pecah isi kolom 10 dan seterusnya jadi token, isi kolom 11–17 agar data sampai kolom 18.
+    TARGET_COLS = len(TEMPLATE_HEADER_18)  # 18
+    FIXED_BEFORE_STATUS = 10  # kolom 0–9: No sampai Domisili
+    if data_rows:
+        expanded = []
+        for row in data_rows:
+            n = len(row)
+            if n >= TARGET_COLS:
+                expanded.append(row[:TARGET_COLS])
+                continue
+            if n <= FIXED_BEFORE_STATUS:
+                expanded.append(list(row) + [""] * (TARGET_COLS - n))
+                continue
+            tail_text = " ".join(str(row[i]).strip() for i in range(FIXED_BEFORE_STATUS, n) if row[i])
+            tokens = tail_text.split()
+            status = ""
+            rest = list(tokens)
+            if tokens and tokens[0] in ("L", "A") and len(tokens[0]) == 1:
+                status = tokens[0]
+                rest = tokens[1:]
+            rest_padded = (rest + [""] * 7)[:7]
+            new_row = list(row[:FIXED_BEFORE_STATUS]) + [status] + rest_padded
+            expanded.append(new_row)
+        data_rows = expanded
 
-    # Header dipakai template tetap; isi kolom datanya dari PDF (data_rows).
-    # Jika ada header_top, bangun nama kolom dari strukturnya agar tiap blok Kepemilikan = 3 subkolom.
+    template_header_row = list(TEMPLATE_HEADER_18)
+    if data_rows:
+        data_rows = [
+            (list(row) + [""] * (TARGET_COLS - len(row)))[:TARGET_COLS]
+            for row in data_rows
+        ]
+
+    # Kembalikan: header = template 18 kolom, data = dari PDF (dipad/trim ke 18)
     if header_top and sum(c.get("colspan", 1) for c in header_top) == num_cols:
-        template_header_row = build_template_header_row_from_header_top(header_top)
-    else:
-        template_header_row = build_template_header_row(num_cols)
-
-    # Kembalikan format yang mendukung header 2 baris (header = template, data = dari PDF)
-    if header_top and sum(c.get("colspan", 1) for c in header_top) == num_cols:
+        # Sementara baris Kepemilikan Per tidak ditampilkan
         return {
-            "header_top": header_top,
+            "header_top": [],
             "header_row": template_header_row,
             "data": data_rows,
         }

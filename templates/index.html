@@ -90,10 +90,10 @@
       margin-top: 2rem;
       width: 100%;
       padding: 0 1.5rem;
-      margin-left: 0.5rem;
-      margin-right: 0.5rem;
+      margin-left: 1rem;
+      margin-right: 1rem;
       box-sizing: border-box;
-      max-width: calc(100vw - 2rem);
+      max-width: calc(100% - 2rem);
     }
     .hasil-header {
       display: flex;
@@ -105,9 +105,11 @@
       padding: 0;
     }
     .hasil-header h2 {
-      font-size: 1.1rem;
-      color: #0d47a1;
+      font-size: 1.25rem;
+      color: #1565c0;
       margin: 0;
+      font-weight: 600;
+      letter-spacing: -0.3px;
     }
     #btn-download-pdf {
       background: #2e7d32;
@@ -117,69 +119,228 @@
       border-radius: 6px;
       font-size: 0.9rem;
       cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 4px rgba(46, 125, 50, 0.2);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
     }
-    #btn-download-pdf:hover { background: #1b5e20; }
-    .scroll-hint {
+    #btn-download-pdf:hover {
+      background: #1b5e20;
+      box-shadow: 0 3px 6px rgba(46, 125, 50, 0.3);
+      transform: translateY(-1px);
+    }
+    .kolom-filter-wrap {
+      position: relative;
+      display: inline-block;
+    }
+    #btn-filter-kolom {
+      background: #5c6bc0;
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 4px rgba(92, 107, 192, 0.2);
+    }
+    #btn-filter-kolom:hover {
+      background: #3949ab;
+      box-shadow: 0 3px 6px rgba(92, 107, 192, 0.3);
+      transform: translateY(-1px);
+    }
+    .filter-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-block;
+      fill: currentColor;
+    }
+    .kolom-filter-panel {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 0.5rem;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.15), 0 2px 6px rgba(0,0,0,0.1);
+      padding: 1rem 1.25rem;
+      min-width: 300px;
+      max-height: 400px;
+      overflow-y: auto;
+      z-index: 100;
+    }
+    .kolom-filter-panel::-webkit-scrollbar {
+      width: 8px;
+    }
+    .kolom-filter-panel::-webkit-scrollbar-thumb {
+      background: #90caf9;
+      border-radius: 4px;
+    }
+    .kolom-filter-panel.tampil { display: block; }
+    .kolom-filter-panel h3 {
+      margin: 0 0 0.75rem 0;
+      font-size: 1rem;
+      color: #1565c0;
+      font-weight: 600;
+      border-bottom: 2px solid #e3f2fd;
+      padding-bottom: 0.5rem;
+    }
+    .kolom-filter-panel .filter-actions {
+      margin-bottom: 0.75rem;
+      display: flex;
+      gap: 0.5rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .kolom-filter-panel .filter-actions button {
+      padding: 0.4rem 0.75rem;
       font-size: 0.8rem;
-      color: #666;
-      margin: 0 0 4px 0;
+      background: #e3f2fd;
+      color: #1565c0;
+      border: 1px solid #90caf9;
+      border-radius: 5px;
+      transition: all 0.2s ease;
     }
-    /* Scroll horizontal di atas: agar user bisa geser tabel tanpa scroll ke bawah dulu */
+    .kolom-filter-panel .filter-actions button:hover {
+      background: #bbdefb;
+      border-color: #64b5f6;
+      transform: translateY(-1px);
+    }
+    .kolom-filter-panel label {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.5rem 0.5rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+      border-radius: 5px;
+      transition: background 0.15s ease;
+    }
+    .kolom-filter-panel label:hover {
+      background: #f5f9ff;
+    }
+    .kolom-filter-panel input[type="checkbox"] {
+      cursor: pointer;
+      width: 18px;
+      height: 18px;
+      accent-color: #5c6bc0;
+    }
+    .tabel-hasil th.col-visibility-hidden,
+    .tabel-hasil td.col-visibility-hidden { display: none !important; }
+    /* Area scroll horizontal di atas tabel: selalu terlihat, tidak perlu scroll ke bawah */
+    .tabel-scroll-label {
+      font-size: 0.8rem;
+      color: #1565c0;
+      margin-bottom: 0.35rem;
+      display: block;
+    }
     .tabel-scroll-top {
       overflow-x: auto;
       overflow-y: hidden;
-      border: 1px solid #90caf9;
+      border: 1px solid #e0e0e0;
       border-bottom: none;
-      border-radius: 8px 8px 0 0;
-      background: #e3f2fd;
+      border-radius: 10px 10px 0 0;
+      background: #f5f9ff;
       min-height: 28px;
-      padding: 8px 0;
+      padding: 4px 0;
       -webkit-overflow-scrolling: touch;
+    }
+    .tabel-scroll-top::-webkit-scrollbar,
+    .tabel-scroll::-webkit-scrollbar {
+      height: 12px;
+    }
+    .tabel-scroll-top::-webkit-scrollbar-thumb,
+    .tabel-scroll::-webkit-scrollbar-thumb {
+      background: #90caf9;
+      border-radius: 6px;
     }
     .tabel-scroll-top .tabel-scroll-spacer {
       height: 1px;
       display: block;
     }
-    .tabel-scroll-top::-webkit-scrollbar {
-      height: 14px;
-    }
-    .tabel-scroll-top::-webkit-scrollbar-track {
-      background: #bbdefb;
-      border-radius: 4px;
-    }
-    .tabel-scroll-top::-webkit-scrollbar-thumb {
-      background: #1976d2;
-      border-radius: 4px;
-    }
-    .tabel-scroll-top::-webkit-scrollbar-thumb:hover {
-      background: #1565c0;
-    }
     .tabel-scroll {
       overflow-x: auto;
-      border: 1px solid #90caf9;
-      border-radius: 0 0 8px 8px;
+      border: 1px solid #e0e0e0;
+      border-radius: 0 0 10px 10px;
       background: #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
       -webkit-overflow-scrolling: touch;
     }
     .tabel-hasil {
       width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 0.875rem;
+      background: #fff;
     }
     .tabel-hasil th,
     .tabel-hasil td {
-      border: 1px solid #90caf9;
-      padding: 0.5rem 0.75rem;
+      border: 1px solid #e0e0e0;
+      padding: 0.75rem 1rem;
       text-align: left;
-      color: #0d47a1;
       word-wrap: break-word;
       vertical-align: top;
+      transition: background-color 0.15s ease;
     }
     .tabel-hasil th {
-      background: #e3f2fd;
+      background: linear-gradient(180deg, #f5f9ff 0%, #e3f2fd 100%);
       font-weight: 600;
+      color: #1565c0;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 2px solid #90caf9;
+      text-transform: uppercase;
+      font-size: 0.8rem;
+      letter-spacing: 0.5px;
+      text-align: center;
+      vertical-align: middle;
     }
-    .tabel-hasil tr:nth-child(even) { background: #f5f9ff; }
+    .tabel-hasil th:first-child {
+      border-left: none;
+    }
+    .tabel-hasil th:last-child {
+      border-right: none;
+    }
+    /* Baris header atas (Kepemilikan Per 28-JAN-2026, dll) seperti di PDF */
+    .tabel-hasil thead tr:first-child th {
+      background: linear-gradient(180deg, #c62828 0%, #b71c1c 100%);
+      color: #fff;
+      font-weight: 600;
+      border-color: #8b0000;
+      border-bottom: 2px solid #8b0000;
+      text-transform: none;
+      letter-spacing: normal;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .tabel-hasil tbody tr {
+      transition: background-color 0.15s ease, transform 0.1s ease;
+    }
+    .tabel-hasil tbody tr:nth-child(even) {
+      background: #fafbfd;
+    }
+    .tabel-hasil tbody tr:nth-child(odd) {
+      background: #ffffff;
+    }
+    .tabel-hasil tbody tr:hover {
+      background: #e8f0f8;
+      transform: scale(1.001);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .tabel-hasil td {
+      color: #424242;
+      border-color: #e8e8e8;
+    }
+    .tabel-hasil tbody tr:first-child td {
+      border-top: 1px solid #e0e0e0;
+    }
   </style>
 </head>
 <body>
@@ -203,10 +364,28 @@
   <div id="hasil-wrapper" class="hasil-wrapper" style="display: none;">
     <div class="hasil-header">
       <h2>Hasil</h2>
-      <button type="button" id="btn-download-pdf">Unduh PDF</button>
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <div class="kolom-filter-wrap">
+          <button type="button" id="btn-filter-kolom">
+            <svg class="filter-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
+            </svg>
+            Filter kolom
+          </button>
+          <div id="kolom-filter-panel" class="kolom-filter-panel" aria-label="Pilih kolom yang ditampilkan">
+            <h3>Kolom yang ditampilkan</h3>
+            <div class="filter-actions">
+              <button type="button" id="btn-tampilkan-semua">Tampilkan semua</button>
+              <button type="button" id="btn-sembunyikan-semua">Sembunyikan semua</button>
+            </div>
+            <div id="kolom-filter-list"></div>
+          </div>
+        </div>
+        <button type="button" id="btn-download-pdf">Unduh PDF</button>
+      </div>
     </div>
-    <p class="scroll-hint">Geser tabel ke kiri/kanan di sini (tanpa perlu scroll ke bawah):</p>
-    <div id="tabel-scroll-top" class="tabel-scroll-top" aria-hidden="true">
+    <span class="tabel-scroll-label" id="tabel-scroll-label">Geserr tabel ke kiri/kanan di sini (tanpa perlu scroll ke bawah):</span>
+    <div id="tabel-scroll-top" class="tabel-scroll-top" aria-label="Scroll horizontal tabel">
       <span id="tabel-scroll-spacer" class="tabel-scroll-spacer"></span>
     </div>
     <div id="tabel-scroll" class="tabel-scroll">
@@ -226,8 +405,14 @@
     const tabelScrollTop = document.getElementById("tabel-scroll-top");
     const tabelScrollSpacer = document.getElementById("tabel-scroll-spacer");
     const btnDownloadPdf = document.getElementById("btn-download-pdf");
+    const btnFilterKolom = document.getElementById("btn-filter-kolom");
+    const kolomFilterPanel = document.getElementById("kolom-filter-panel");
+    const kolomFilterList = document.getElementById("kolom-filter-list");
+    const btnTampilkanSemua = document.getElementById("btn-tampilkan-semua");
+    const btnSembunyikanSemua = document.getElementById("btn-sembunyikan-semua");
 
     let dataTabelTerakhir = [];
+    let colVisibility = []; // true = tampilkan, false = sembunyikan
 
     function syncScrollAtas() {
       tabelScroll.scrollLeft = tabelScrollTop.scrollLeft;
@@ -253,17 +438,34 @@
       if (!show) pesan.style.display = "none";
     }
 
+    function applyColumnVisibility() {
+      const numCols = colVisibility.length;
+      for (let c = 0; c < numCols; c++) {
+        const visible = colVisibility[c] !== false;
+        const cls = visible ? "col-visibility-visible" : "col-visibility-hidden";
+        tabelHasil.querySelectorAll("th[data-col=\"" + c + "\"], td[data-col=\"" + c + "\"]").forEach(function (el) {
+          el.classList.remove("col-visibility-visible", "col-visibility-hidden");
+          el.classList.add(cls);
+        });
+      }
+      kolomFilterList.querySelectorAll("input[type=checkbox]").forEach(function (cb, i) {
+        if (colVisibility[i] !== undefined) cb.checked = colVisibility[i];
+      });
+    }
+
     function renderTabel(table, headerTop) {
       dataTabelTerakhir = table || [];
       tabelHasil.innerHTML = "";
       if (!table || table.length === 0) {
         hasilWrapper.style.display = "none";
+        kolomFilterList.innerHTML = "";
         return;
       }
       const numCols = Math.max(...table.map(r => r.length));
-      const thead = document.createElement("thead");
       const headerRow = table[0] || [];
-      // Baris header atas (Kepemilikan Per 28-JAN-2026, 29-JAN-2026, dll) dengan colspan
+      colVisibility = Array(numCols).fill(true);
+
+      const thead = document.createElement("thead");
       if (headerTop && headerTop.length > 0) {
         const trTop = document.createElement("tr");
         headerTop.forEach(function (cell) {
@@ -274,11 +476,12 @@
         });
         thead.appendChild(trTop);
       }
-      // Baris header utama (No, Kode Efek, Nama Emiten, ...)
       const trHead = document.createElement("tr");
       for (let c = 0; c < numCols; c++) {
         const th = document.createElement("th");
-        th.textContent = headerRow.length > c ? (headerRow[c] || "") : "";
+        th.setAttribute("data-col", String(c));
+        th.classList.add("col-visibility-visible");
+        th.textContent = headerRow.length > c ? (headerRow[c] || "") : ("Kolom " + (c + 1));
         trHead.appendChild(th);
       }
       thead.appendChild(trHead);
@@ -288,12 +491,31 @@
         const tr = document.createElement("tr");
         for (let c = 0; c < numCols; c++) {
           const td = document.createElement("td");
+          td.setAttribute("data-col", String(c));
+          td.classList.add("col-visibility-visible");
           td.textContent = table[i].length > c ? (table[i][c] || "") : "";
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
       }
       tabelHasil.appendChild(tbody);
+
+      kolomFilterList.innerHTML = "";
+      for (let c = 0; c < numCols; c++) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = true;
+        cb.setAttribute("data-col", String(c));
+        cb.addEventListener("change", function () {
+          colVisibility[c] = cb.checked;
+          applyColumnVisibility();
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(headerRow[c] || ("Kolom " + (c + 1))));
+        kolomFilterList.appendChild(label);
+      }
+
       hasilWrapper.style.display = "block";
       requestAnimationFrame(function () {
         const w = tabelHasil.scrollWidth;
@@ -303,6 +525,25 @@
         pasangSyncScroll();
       });
     }
+
+    btnFilterKolom.addEventListener("click", function (e) {
+      e.stopPropagation();
+      kolomFilterPanel.classList.toggle("tampil");
+    });
+    document.addEventListener("click", function () {
+      kolomFilterPanel.classList.remove("tampil");
+    });
+    kolomFilterPanel.addEventListener("click", function (e) {
+      e.stopPropagation();
+    });
+    btnTampilkanSemua.addEventListener("click", function () {
+      for (let i = 0; i < colVisibility.length; i++) colVisibility[i] = true;
+      applyColumnVisibility();
+    });
+    btnSembunyikanSemua.addEventListener("click", function () {
+      for (let i = 0; i < colVisibility.length; i++) colVisibility[i] = false;
+      applyColumnVisibility();
+    });
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
