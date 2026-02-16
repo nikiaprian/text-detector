@@ -8,10 +8,14 @@
     * { box-sizing: border-box; }
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 480px;
-      margin: 2rem auto;
-      padding: 0 1rem;
+      margin: 0;
+      padding: 0;
       color: #1a1a1a;
+    }
+    .container-form {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 1rem 1rem;
     }
     h1 {
       font-size: 1.25rem;
@@ -82,27 +86,111 @@
     }
     #pesan.error { background: #ffebee; color: #c62828; display: block; }
     #pesan.sukses { background: #e8f5e9; color: #2e7d32; display: block; }
-    label[for="output_style"] { display: block; margin-top: 1rem; margin-bottom: 0.35rem; }
-    #output_style {
-      width: 100%; padding: 0.5rem; font-size: 0.9rem;
-      border: 1px solid #90caf9; border-radius: 6px; margin-bottom: 1rem;
+    .hasil-wrapper {
+      margin-top: 2rem;
+      width: 100%;
+      padding: 0 1.5rem;
+      margin-left: 0.5rem;
+      margin-right: 0.5rem;
+      box-sizing: border-box;
+      max-width: calc(100vw - 2rem);
     }
+    .hasil-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      padding: 0;
+    }
+    .hasil-header h2 {
+      font-size: 1.1rem;
+      color: #0d47a1;
+      margin: 0;
+    }
+    #btn-download-pdf {
+      background: #2e7d32;
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    #btn-download-pdf:hover { background: #1b5e20; }
+    .scroll-hint {
+      font-size: 0.8rem;
+      color: #666;
+      margin: 0 0 4px 0;
+    }
+    /* Scroll horizontal di atas: agar user bisa geser tabel tanpa scroll ke bawah dulu */
+    .tabel-scroll-top {
+      overflow-x: auto;
+      overflow-y: hidden;
+      border: 1px solid #90caf9;
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      background: #e3f2fd;
+      min-height: 28px;
+      padding: 8px 0;
+      -webkit-overflow-scrolling: touch;
+    }
+    .tabel-scroll-top .tabel-scroll-spacer {
+      height: 1px;
+      display: block;
+    }
+    .tabel-scroll-top::-webkit-scrollbar {
+      height: 14px;
+    }
+    .tabel-scroll-top::-webkit-scrollbar-track {
+      background: #bbdefb;
+      border-radius: 4px;
+    }
+    .tabel-scroll-top::-webkit-scrollbar-thumb {
+      background: #1976d2;
+      border-radius: 4px;
+    }
+    .tabel-scroll-top::-webkit-scrollbar-thumb:hover {
+      background: #1565c0;
+    }
+    .tabel-scroll {
+      overflow-x: auto;
+      border: 1px solid #90caf9;
+      border-radius: 0 0 8px 8px;
+      background: #fff;
+      -webkit-overflow-scrolling: touch;
+    }
+    .tabel-hasil {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    .tabel-hasil th,
+    .tabel-hasil td {
+      border: 1px solid #90caf9;
+      padding: 0.5rem 0.75rem;
+      text-align: left;
+      color: #0d47a1;
+      word-wrap: break-word;
+      vertical-align: top;
+    }
+    .tabel-hasil th {
+      background: #e3f2fd;
+      font-weight: 600;
+    }
+    .tabel-hasil tr:nth-child(even) { background: #f5f9ff; }
   </style>
 </head>
 <body>
+  <div class="container-form">
   <h1>Ekstrak Teks Biru dari PDF</h1>
-  <p>Unggah file PDF. Hanya teks yang berwarna biru akan dibaca dan digabung menjadi satu PDF baru.</p>
+  <p>Unggah file PDF. Hanya teks yang berwarna biru akan dibaca dan ditampilkan sebagai tabel di bawah. Anda bisa mengunduh hasilnya sebagai PDF.</p>
 
   <form id="form" enctype="multipart/form-data">
     <label for="file">Pilih file PDF</label>
     <input type="file" id="file" name="file" accept=".pdf" required>
-    <label for="output_style">Format output</label>
-    <select id="output_style" name="output_style">
-      <option value="paragraph">Paragraf — spasi wajar, enak dibaca</option>
-      <option value="compact">Compact — rapat, cocok list/tabel</option>
-      <option value="lines">Baris per baris — cocok isi tabel (satu baris = satu entri)</option>
-    </select>
-    <button type="submit" id="btn">Ekstrak teks biru → unduh PDF</button>
+    <button type="submit" id="btn">Ekstrak teks biru</button>
   </form>
 
   <div id="loading" aria-live="polite">
@@ -110,6 +198,21 @@
     <span>Memproses PDF…</span>
   </div>
   <div id="pesan" role="alert"></div>
+  </div>
+
+  <div id="hasil-wrapper" class="hasil-wrapper" style="display: none;">
+    <div class="hasil-header">
+      <h2>Hasil</h2>
+      <button type="button" id="btn-download-pdf">Unduh PDF</button>
+    </div>
+    <p class="scroll-hint">Geser tabel ke kiri/kanan di sini (tanpa perlu scroll ke bawah):</p>
+    <div id="tabel-scroll-top" class="tabel-scroll-top" aria-hidden="true">
+      <span id="tabel-scroll-spacer" class="tabel-scroll-spacer"></span>
+    </div>
+    <div id="tabel-scroll" class="tabel-scroll">
+      <table id="tabel-hasil" class="tabel-hasil"></table>
+    </div>
+  </div>
 
   <script>
     const form = document.getElementById("form");
@@ -117,6 +220,27 @@
     const btn = document.getElementById("btn");
     const loading = document.getElementById("loading");
     const pesan = document.getElementById("pesan");
+    const hasilWrapper = document.getElementById("hasil-wrapper");
+    const tabelHasil = document.getElementById("tabel-hasil");
+    const tabelScroll = document.getElementById("tabel-scroll");
+    const tabelScrollTop = document.getElementById("tabel-scroll-top");
+    const tabelScrollSpacer = document.getElementById("tabel-scroll-spacer");
+    const btnDownloadPdf = document.getElementById("btn-download-pdf");
+
+    let dataTabelTerakhir = [];
+
+    function syncScrollAtas() {
+      tabelScroll.scrollLeft = tabelScrollTop.scrollLeft;
+    }
+    function syncScrollBawah() {
+      tabelScrollTop.scrollLeft = tabelScroll.scrollLeft;
+    }
+    function pasangSyncScroll() {
+      tabelScrollTop.removeEventListener("scroll", syncScrollAtas);
+      tabelScroll.removeEventListener("scroll", syncScrollBawah);
+      tabelScrollTop.addEventListener("scroll", syncScrollAtas);
+      tabelScroll.addEventListener("scroll", syncScrollBawah);
+    }
 
     function tampilPesan(teks, isError) {
       pesan.textContent = teks;
@@ -129,6 +253,57 @@
       if (!show) pesan.style.display = "none";
     }
 
+    function renderTabel(table, headerTop) {
+      dataTabelTerakhir = table || [];
+      tabelHasil.innerHTML = "";
+      if (!table || table.length === 0) {
+        hasilWrapper.style.display = "none";
+        return;
+      }
+      const numCols = Math.max(...table.map(r => r.length));
+      const thead = document.createElement("thead");
+      const headerRow = table[0] || [];
+      // Baris header atas (Kepemilikan Per 28-JAN-2026, 29-JAN-2026, dll) dengan colspan
+      if (headerTop && headerTop.length > 0) {
+        const trTop = document.createElement("tr");
+        headerTop.forEach(function (cell) {
+          const th = document.createElement("th");
+          th.textContent = cell.text || "";
+          th.setAttribute("colspan", String(cell.colspan || 1));
+          trTop.appendChild(th);
+        });
+        thead.appendChild(trTop);
+      }
+      // Baris header utama (No, Kode Efek, Nama Emiten, ...)
+      const trHead = document.createElement("tr");
+      for (let c = 0; c < numCols; c++) {
+        const th = document.createElement("th");
+        th.textContent = headerRow.length > c ? (headerRow[c] || "") : "";
+        trHead.appendChild(th);
+      }
+      thead.appendChild(trHead);
+      tabelHasil.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (let i = 1; i < table.length; i++) {
+        const tr = document.createElement("tr");
+        for (let c = 0; c < numCols; c++) {
+          const td = document.createElement("td");
+          td.textContent = table[i].length > c ? (table[i][c] || "") : "";
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      tabelHasil.appendChild(tbody);
+      hasilWrapper.style.display = "block";
+      requestAnimationFrame(function () {
+        const w = tabelHasil.scrollWidth;
+        tabelScrollSpacer.style.width = w + "px";
+        tabelScrollTop.scrollLeft = 0;
+        tabelScroll.scrollLeft = 0;
+        pasangSyncScroll();
+      });
+    }
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const file = fileInput.files[0];
@@ -138,35 +313,65 @@
       }
       btn.disabled = true;
       tampilLoading(true);
+      hasilWrapper.style.display = "none";
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("output_style", document.getElementById("output_style").value);
       try {
         const res = await fetch("/api/extract-blue", {
           method: "POST",
           body: fd,
         });
         tampilLoading(false);
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
           const msg = data.error || res.statusText;
           const hint = data.hint ? " " + data.hint : "";
           tampilPesan(msg + hint, true);
+          return;
+        }
+        if (data.table && data.table.length > 0) {
+          renderTabel(data.table, data.header_top || null);
+          tampilPesan("Teks biru berhasil diekstrak. Tabel ditampilkan di bawah.", false);
+        } else {
+          tampilPesan("Tidak ada data tabel.", true);
+        }
+      } catch (err) {
+        tampilLoading(false);
+        tampilPesan("Gagal: " + err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    btnDownloadPdf.addEventListener("click", async () => {
+      if (dataTabelTerakhir.length === 0) {
+        tampilPesan("Belum ada data tabel. Ekstrak PDF terlebih dahulu.", true);
+        return;
+      }
+      btnDownloadPdf.disabled = true;
+      try {
+        const res = await fetch("/api/download-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ table: dataTabelTerakhir }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          tampilPesan(data.error || "Gagal membuat PDF", true);
           return;
         }
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "teks_biru.pdf";
+        a.download = "teks_biru_tabel.pdf";
         a.click();
         URL.revokeObjectURL(url);
-        tampilPesan("PDF berhasil dibuat. Unduhan dimulai.", false);
+        tampilPesan("PDF berhasil diunduh.", false);
       } catch (err) {
-        tampilLoading(false);
         tampilPesan("Gagal: " + err.message, true);
       } finally {
-        btn.disabled = false;
+        btnDownloadPdf.disabled = false;
       }
     });
   </script>
