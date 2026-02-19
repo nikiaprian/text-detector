@@ -246,7 +246,8 @@ TEMPLATE_HEADER_FIXED = (
     "Domisili",
     "Status (Lokal/Asing)",
 )
-# Template header 18 kolom tetap (untuk tabel standar 2 periode Kepemilikan)
+# Template header 18 kolom (internal); tampilan 17 kolom setelah gabung Alamat.
+# Dua set numerik diberi label (1) dan (2) agar tidak membingungkan.
 TEMPLATE_HEADER_18 = (
     "No",
     "Kode Efek",
@@ -259,12 +260,12 @@ TEMPLATE_HEADER_18 = (
     "Kebangsaan",
     "Domisili",
     "Status (Lokal/Asing)",
-    "Jumlah Saham",
-    "Saham Gabungan Per Investor",
-    "Persentase Kepemilikan Per Investor (%)",
-    "Jumlah Saham",
-    "Saham Gabungan Per Investor",
-    "Persentase Kepemilikan Per Investor (%)",
+    "Jumlah Saham (1)",
+    "Saham Gabungan Per Investor (1)",
+    "Persentase Kepemilikan Per Investor (%) (1)",
+    "Jumlah Saham (2)",
+    "Saham Gabungan Per Investor (2)",
+    "Persentase Kepemilikan Per Investor (%) (2)",
     "Perubahan",
 )
 # Pola untuk pisah "No" dan "Kode Efek" dari sel pertama (e.g. "143 ATLA" -> No=143, Kode Efek=ATLA)
@@ -284,130 +285,6 @@ CORE_HEADER_KEYWORDS = (
     "nama pemegang saham",
     "nama pemegang rekening efek",
 )
-
-
-def build_template_header_row(num_cols: int) -> list[str]:
-    """
-    Buat baris header tetap (template) untuk num_cols kolom.
-    Urutan: 11 kolom tetap (No, Kode Efek, ... Status), lalu tiap blok Kepemilikan 3 subkolom, lalu Perubahan.
-    """
-    d = max(0, (num_cols - 12) // 3)  # 11 + 3*d + 1 = num_cols
-    row = list(TEMPLATE_HEADER_FIXED) + list(KEPEMILIKAN_SUBCOLUMNS) * d + ["Perubahan"]
-    if len(row) < num_cols:
-        row.extend(f"Kolom {i + 1}" for i in range(len(row), num_cols))
-    elif len(row) > num_cols:
-        row = row[:num_cols]
-    return row
-
-
-# Pola tanggal di header Kepemilikan (DD-MMM-YYYY)
-KEPEMILIKAN_DATE_PATTERN = re.compile(
-    r"Kepemilikan\s+Per\s*(\d{2}-[A-Z]{3}-\d{4})",
-    re.IGNORECASE,
-)
-
-
-def _split_kepemilikan_header_top(header_top: list[dict], num_cols: int) -> list[dict]:
-    """
-    Pisahkan entri header_top yang berisi dua tanggal (mis. "Kepemilikan Per 28-JAN-2026
-    Kepemilikan Per 29-JAN-2026") menjadi dua entri terpisah agar tampilan sesuai PDF.
-    """
-    out = []
-    for h in header_top:
-        c = h.get("colspan", 1)
-        text = (h.get("text") or "").strip()
-        text_lower = text.lower()
-        if "kepemilikan" not in text_lower or c < 4:
-            out.append(h)
-            continue
-        # Cari semua "Kepemilikan Per DD-MMM-YYYY"
-        dates = KEPEMILIKAN_DATE_PATTERN.findall(text)
-        if len(dates) >= 2 and c >= 4:
-            # Ada dua tanggal: bagi colspan jadi 2 (masing-masing 3 subkolom)
-            per_block = max(3, c // 2)
-            out.append({"text": f"Kepemilikan Per {dates[0]}", "colspan": per_block})
-            out.append({"text": f"Kepemilikan Per {dates[1]}", "colspan": c - per_block})
-        else:
-            out.append(h)
-    # Pastikan total colspan tetap num_cols
-    total = sum(x.get("colspan", 1) for x in out)
-    if total != num_cols and out:
-        if total > num_cols:
-            while total > num_cols and out:
-                last = out[-1]
-                cc = last.get("colspan", 1)
-                if cc > 1:
-                    last["colspan"] = cc - 1
-                    total -= 1
-                else:
-                    out.pop()
-                    total -= 1
-        if total < num_cols:
-            out.append({"text": "", "colspan": num_cols - total})
-    return out
-
-
-def build_template_header_row_from_header_top(header_top: list[dict]) -> list[str]:
-    """
-    Bangun baris header (nama kolom) dari struktur header_top.
-    Setiap blok 'Kepemilikan Per' selalu dapat 3 subkolom: Jumlah Saham, Saham Gabungan Per Investor,
-    Persentase Kepemilikan Per Investor (%).
-    """
-    row = []
-    fixed_used = 0
-    total_cols = sum(h.get("colspan", 1) for h in header_top)
-    subcols = list(KEPEMILIKAN_SUBCOLUMNS)
-    n_fixed = len(TEMPLATE_HEADER_FIXED)  # 11: No, Kode Efek, ..., Status
-
-    for i, h in enumerate(header_top):
-        c = h.get("colspan", 1)
-        text = (h.get("text") or "").strip().lower()
-
-        if fixed_used < n_fixed:
-            n = min(c, n_fixed - fixed_used)
-            row.extend(list(TEMPLATE_HEADER_FIXED)[fixed_used : fixed_used + n])
-            fixed_used += n
-            remaining = c - n
-            if remaining <= 0:
-                continue
-            # Sisa span ini = blok Kepemilikan (selalu 3 nama)
-            if "kepemilikan" in text:
-                row.extend(subcols[: min(remaining, 3)])
-                if remaining > 3:
-                    row.extend([""] * (remaining - 3))
-            else:
-                row.extend([""] * remaining)
-            continue
-
-        if "kepemilikan" in text:
-            row.extend(subcols[: min(c, 3)])
-            if c > 3:
-                row.extend([""] * (c - 3))
-        elif "perubahan" in text or (i == len(header_top) - 1 and c == 1):
-            row.append("Perubahan")
-            if c > 1:
-                row.extend([""] * (c - 1))
-        else:
-            row.extend([""] * c)
-
-    return row[:total_cols] if len(row) >= total_cols else row + [""] * (total_cols - len(row))
-
-
-def _is_merged_kepemilikan_cell(cell_text: str) -> bool:
-    """
-    True jika sel header berisi gabungan sub-kolom Kepemilikan (Jumlah Saham + Saham Gabungan + Persentase)
-    sehingga perlu dipecah jadi 3 kolom terpisah.
-    """
-    if not cell_text or not isinstance(cell_text, str):
-        return False
-    c = cell_text.lower().strip()
-    if len(c) < 15:
-        return False
-    has_jumlah_saham = "jumlah" in c and "saham" in c
-    has_gabungan = "gabungan" in c or ("saham" in c and "investor" in c)
-    has_persentase = "persentase" in c or "kepemilikan" in c
-    # Minimal 2 dari 3 sub-kolom ada dalam satu sel = dianggap merged
-    return sum([has_jumlah_saham, has_gabungan, has_persentase]) >= 2
 
 
 def _row_text_lower(row_spans: list[dict]) -> str:
@@ -455,6 +332,525 @@ def _row_looks_like_header(row_spans: list[dict]) -> bool:
     return True
 
 
+def _looks_like_stock_code(s: str) -> bool:
+    """True jika teks mirip kode saham (singkat, huruf besar, alfanumerik)."""
+    if not s or len(s) > 10:
+        return False
+    t = s.strip().upper()
+    if len(t) < 2:
+        return False
+    if t.isdigit():
+        return False
+    return all(c.isalnum() or c in ".-" for c in t)
+
+
+def _looks_like_no(s: str) -> bool:
+    """True jika teks mirip nomor urut (angka saja, boleh dengan koma)."""
+    if not s:
+        return False
+    t = s.strip().replace(",", "").replace(" ", "")
+    return t.isdigit() and len(t) <= 6
+
+
+def _looks_like_company_name(s: str) -> bool:
+    """True jika teks mirip nama emiten (panjang, ada Tbk/PT)."""
+    if not s or len(s) < 10:
+        return False
+    t = s.strip()
+    return "Tbk" in t or ", PT" in t or "PT " in t or ("," in t and len(t) > 15)
+
+
+def _merge_split_kode_emiten_rows(raw_data_rows: list[tuple], num_cols: int) -> list[tuple]:
+    """
+    Gabungkan baris yang terpecah:
+    - Pattern A: baris i kolom 1 = Nama Emiten (salah), kolom 2 kosong; baris berikut ada Kode Efek → pindah Nama Emiten ke kolom 2, isi kolom 1 dengan Kode Efek.
+    - Pattern B: baris i kolom 1 = Kode Efek, kolom 2 kosong; baris berikut kolom 1 = Nama Emiten → isi kolom 2 dengan Nama Emiten dari baris berikut.
+    """
+    if num_cols < 3:
+        return raw_data_rows
+    result = []
+    i = 0
+    while i < len(raw_data_rows):
+        row_meta = raw_data_rows[i]
+        cells = list((row_meta[1] if len(row_meta) > 1 else []) + [""] * num_cols)[:num_cols]
+        col0 = (cells[0] if len(cells) > 0 else "").strip()
+        col1 = (cells[1] or "").strip()
+        col2 = (cells[2] if len(cells) > 2 else "").strip()
+
+        merged = False
+        # Cari baris berikut (hingga 3 baris ke depan) untuk pola terpecah
+        for k in range(1, min(4, len(raw_data_rows) - i)):
+            next_meta = raw_data_rows[i + k]
+            next_cells = list((next_meta[1] if len(next_meta) > 1 else []) + [""] * num_cols)[:num_cols]
+            next_col0 = (next_cells[0] if len(next_cells) > 0 else "").strip()
+            next_col1 = (next_cells[1] if len(next_cells) > 1 else "").strip()
+            same_entity = (not next_col0 or next_col0 == col0)
+
+            # Pattern A: baris ini kolom 1 = nama emiten (salah), kolom 2 kosong; baris lain punya kode efek
+            if (
+                col1
+                and not col2
+                and _looks_like_company_name(col1)
+                and next_col1
+                and _looks_like_stock_code(next_col1)
+                and same_entity
+            ):
+                cells[1] = next_col1
+                cells[2] = col1
+                for j in range(num_cols):
+                    if j not in (1, 2) and (not cells[j] or not str(cells[j]).strip()) and j < len(next_cells):
+                        v = next_cells[j]
+                        if v and str(v).strip():
+                            cells[j] = v
+                result.append((row_meta[0], cells, row_meta[2] if len(row_meta) > 2 else row_meta[0]))
+                i += 1 + k
+                merged = True
+                break
+
+            # Pattern B: baris ini kolom 1 = kode efek, kolom 2 kosong; baris berikut kolom 1 = nama emiten
+            if (
+                col1
+                and not col2
+                and _looks_like_stock_code(col1)
+                and next_col1
+                and _looks_like_company_name(next_col1)
+                and same_entity
+            ):
+                cells[2] = next_col1
+                for j in range(num_cols):
+                    if j != 2 and (not cells[j] or not str(cells[j]).strip()) and j < len(next_cells):
+                        v = next_cells[j]
+                        if v and str(v).strip():
+                            cells[j] = v
+                result.append((row_meta[0], cells, row_meta[2] if len(row_meta) > 2 else row_meta[0]))
+                i += 1 + k
+                merged = True
+                break
+
+        if not merged:
+            result.append((row_meta[0], cells, row_meta[2] if len(row_meta) > 2 else row_meta[0]))
+            i += 1
+    return result
+
+
+def _fix_no_kode_efek_cells(cells: list, num_cols: int) -> None:
+    """
+    Koreksi in-place: kolom No (0) harus berisi nomor urut, bukan kode efek.
+    - Jika sel 0 berisi "247 BKSL" (gabungan), pecah jadi No=247, Kode Efek=BKSL.
+    - Jika sel 0 = kode efek dan sel 1 = nomor → tukar.
+    - Jika sel 0 = kode efek dan sel 1 bukan nomor → pindah sel 0 ke sel 1 (Kode Efek), No kosong.
+    """
+    if num_cols < 2:
+        return
+    col0 = (cells[0] if len(cells) > 0 else "").strip()
+    col1 = (cells[1] if len(cells) > 1 else "").strip()
+    if not col0:
+        return
+    m = NO_KODE_EFEK_PATTERN.match(col0)
+    if m:
+        no_part, rest = m.group(1).strip(), m.group(2).strip()
+        if no_part and rest:
+            cells[0] = no_part
+            if len(cells) <= 1:
+                cells.append(rest)
+            else:
+                if not col1 or col1 == "-":
+                    cells[1] = rest
+                elif rest not in col1:
+                    cells[1] = rest + " " + col1
+        return
+    if not _looks_like_stock_code(col0):
+        return
+    if _looks_like_no(col1):
+        cells[0], cells[1] = col1, col0
+        return
+    cells[0] = "-"
+    if not col1 or col1 == "-":
+        cells[1] = col0
+
+
+def _fix_kode_emiten_cells(cells: list, num_cols: int) -> None:
+    """
+    Koreksi in-place: jika kolom 1 (Kode Efek) berisi nama emiten dan kolom 2 (Nama Emiten) kosong,
+    pindahkan isi kolom 1 ke kolom 2 dan kosongkan kolom 1. Agar Nama Emiten tidak kosong.
+    """
+    if num_cols < 3:
+        return
+    col1 = (cells[1] if len(cells) > 1 else "").strip()
+    col2 = (cells[2] if len(cells) > 2 else "").strip()
+    if col1 and not col2 and _looks_like_company_name(col1):
+        cells[1] = "-"
+        if len(cells) <= 2:
+            cells.append(col1)
+        else:
+            cells[2] = col1
+
+
+def _looks_like_percentage_value(s: str) -> bool:
+    """True jika nilai mirip persentase (desimal seperti 5.00, 11.70), bukan bilangan bulat seperti 343 atau 0."""
+    if not s or s.strip() == "-":
+        return False
+    s = s.strip().replace(",", "")
+    if not s:
+        return False
+    try:
+        v = float(s)
+        # Persentase biasanya 0–100 dengan desimal; bilangan bulat besar (343) atau 0 = Perubahan
+        if v == 0:
+            return False
+        if "." in s and abs(v) < 1000:
+            return True
+        return False
+    except ValueError:
+        return False
+
+
+def _looks_like_text_not_number(s: str) -> bool:
+    """True jika nilai jelas teks (nama, alamat, negara): ada huruf dan bukan murni angka/desimal."""
+    if not s or s.strip() == "-":
+        return False
+    t = s.strip()
+    # Angka dengan koma/point saja = bukan teks
+    cleaned = t.replace(",", "").replace(".", "").replace(" ", "")
+    if cleaned.isdigit():
+        return False
+    # Nilai desimal murni (5.02, 11.76) = bukan teks
+    if _looks_like_percentage_value(t):
+        return False
+    # Ada huruf dan panjang > 2 = teks (nama, alamat, dll)
+    return any(c.isalpha() for c in t) and len(t) > 2
+
+
+def _looks_like_large_number(s: str) -> bool:
+    """True jika nilai mirip bilangan besar (jumlah saham): angka dengan/tanpa koma atau titik (pemisah ribuan)."""
+    if not s or s.strip() == "-":
+        return False
+    t = s.strip().replace(",", "").replace(" ", "").replace(".", "")  # titik/koma pemisah ribuan
+    if not t.isdigit():
+        return False
+    return len(t) >= 4  # minimal orde ribuan
+
+
+def _looks_like_change_value(s: str) -> bool:
+    """True jika nilai mirip kolom Perubahan: angka kecil, 0, atau '-'."""
+    if not s:
+        return True
+    t = s.strip()
+    if t == "-":
+        return True
+    t = t.replace(",", "").replace(" ", "")
+    if not t.isdigit():
+        return False
+    return int(t) >= 0 and len(t) <= 15  # angka wajar untuk perubahan
+
+
+def _fix_split_percentage_cells(cells: list, num_cols: int) -> None:
+    """
+    Jika sel Persentase (1) atau (2) berisi dua nilai digabung (mis. "34.05\\n37.826.100.852"),
+    pisahkan: nilai persen tetap di kolom persen, nilai besar pindah ke Saham Gabungan.
+    """
+    if num_cols < 18:
+        return
+    for idx_pct, idx_saham in ((13, 12), (16, 15)):  # Persentase(1)+Saham Gab(1), Persentase(2)+Saham Gab(2)
+        val = (cells[idx_pct] if idx_pct < len(cells) else "").strip() or "-"
+        if "\n" not in val:
+            continue
+        parts = [p.strip() for p in val.replace("\n", " ").split() if p.strip()]
+        pct_part = None
+        large_part = None
+        for p in parts:
+            if _looks_like_percentage_value(p):
+                pct_part = p
+            elif _looks_like_large_number(p):
+                large_part = p
+        if pct_part and large_part:
+            while len(cells) <= max(idx_pct, idx_saham):
+                cells.append("-")
+            cells[idx_pct] = pct_part
+            if (cells[idx_saham] or "").strip() in ("-", ""):
+                cells[idx_saham] = large_part
+        elif pct_part:
+            while len(cells) <= idx_pct:
+                cells.append("-")
+            cells[idx_pct] = pct_part
+
+
+def _fix_perubahan_split_percentage_then_number(cells: list, num_cols: int) -> None:
+    """
+    Jika kolom Perubahan berisi "X Y" dengan X = persen (36.67, 5.24, 21.95) dan Y = angka
+    (2.703.857.638, 6,784,500, 0), pisah: X → Persentase (2), Y → Perubahan.
+    Memperbaiki kasus No 341, 418, 497 dimana nilai persen salah masuk ke Perubahan.
+    """
+    if num_cols < 18:
+        return
+    idx_pct2 = 16
+    idx_perubahan = 17
+    val17 = (cells[idx_perubahan] if idx_perubahan < len(cells) else "").strip() or "-"
+    if not val17 or val17 == "-":
+        return
+    parts = val17.split()
+    if len(parts) < 2:
+        return
+    first, second = parts[0].strip(), " ".join(parts[1:]).strip()
+    if not _looks_like_percentage_value(first):
+        return
+    # Second bisa angka besar (2.703.857.638), dengan koma (6,784,500), atau 0
+    second_clean = second.replace(",", "").replace(".", "").replace(" ", "")
+    if not second_clean or not second_clean.isdigit():
+        return
+    while len(cells) <= idx_perubahan:
+        cells.append("-")
+    cells[idx_pct2] = first
+    cells[idx_perubahan] = second
+
+
+def _looks_like_securities_name(s: str) -> bool:
+    """True jika teks mirip nama rekening efek/securities (mengandung PT, SEKURITAS, ASSET, dll)."""
+    if not s or s.strip() == "-":
+        return False
+    t = s.strip()
+    if len(t) < 5:
+        return False
+    t_upper = t.upper()
+    # Kata kunci yang menunjukkan nama perusahaan/securities
+    keywords = ["SEKURITAS", "ASSET", "PT", "PT.", "LTD", "S/A", "INTERNATIONAL", "INDONESIA", 
+                "MIRAE", "MANDIRI", "SINARMAS", "CGS", "AJAIB", "INDOVEST", "ABADIMUKTI"]
+    # Jika mengandung kata kunci perusahaan DAN bukan angka/persen
+    has_keyword = any(kw in t_upper for kw in keywords)
+    if has_keyword and not _looks_like_percentage_value(t) and not _looks_like_large_number(t):
+        return True
+    # Atau jika mengandung "PT" atau "PT." di awal atau tengah
+    if ("PT" in t_upper or "PT." in t_upper) and len(t) > 5:
+        return not _looks_like_percentage_value(t) and not _looks_like_large_number(t)
+    return False
+
+
+def _looks_like_person_name(s: str) -> bool:
+    """True jika teks mirip nama orang (huruf kapital, beberapa kata, tidak mengandung PT/SEKURITAS)."""
+    if not s or s.strip() == "-":
+        return False
+    t = s.strip()
+    # Nama orang biasanya tidak mengandung kata kunci perusahaan
+    if _looks_like_securities_name(t):
+        return False
+    # Harus ada huruf, beberapa kata (spasi), dan tidak murni angka
+    words = t.split()
+    # Minimal 2 kata untuk nama lengkap (contoh: "ANDRIANSYAH PRAYITNO", "ADITYA ANTONIUS")
+    if len(words) < 2:
+        return False
+    # Setidaknya 2 kata dan mengandung huruf, bukan angka/persen
+    has_letters = any(c.isalpha() for c in t)
+    is_not_number = not _looks_like_percentage_value(t) and not _looks_like_large_number(t) and not _looks_like_change_value(t)
+    # Nama orang biasanya tidak terlalu panjang (maks ~50 karakter)
+    reasonable_length = len(t) <= 50
+    # Setiap kata harus mengandung huruf (bukan hanya angka/tanda baca)
+    all_words_have_letters = all(any(c.isalpha() for c in word) for word in words)
+    # Contoh: "ANDRIANSYAH PRAYITNO" - 2 kata, huruf semua, panjang wajar
+    # Contoh: "ADITYA ANTONIUS" - 2 kata, huruf semua
+    return has_letters and is_not_number and reasonable_length and len(words) >= 2 and all_words_have_letters
+
+
+def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
+    """
+    Koreksi blok kolom numerik (11-17): Persentase (1)/(2) harus berisi nilai persen,
+    Perubahan harus angka kecil atau '-'. Jika ada teks (nama/alamat) di kolom tersebut,
+    cari nilai yang sesuai di SELURUH BARIS lalu tukar. Jika tidak ditemukan, set ke "-".
+    Indeks 18-kolom: 11=Jumlah(1), 12=Saham Gab(1), 13=Persentase(1), 14=Jumlah(2), 15=Saham Gab(2), 16=Persentase(2), 17=Perubahan.
+    """
+    if num_cols < 18:
+        return
+    idx_pct1 = 13
+    idx_pct2 = 16
+    idx_perubahan = 17
+    block_start, block_end = 11, 18  # 11..17
+
+    def get(i: int) -> str:
+        return (cells[i] if i < len(cells) else "").strip() or "-"
+
+    # Perubahan berisi "36.67 2.703.857.638" atau "5.24 6,784,500" → pisah, persen ke Persentase (2)
+    _fix_perubahan_split_percentage_then_number(cells, num_cols)
+    # Pisah sel yang berisi "34.05\n37.826.100.852" dll
+    _fix_split_percentage_cells(cells, num_cols)
+
+    # Jika Persentase (1) berisi teks (nama rekening efek, nama pemegang saham dll), cari nilai persen di SELURUH BARIS
+    val13 = get(idx_pct1)
+    # Deteksi lebih agresif: nama orang, nama securities, atau teks umum yang bukan angka/persen
+    is_text_in_pct1 = (_looks_like_text_not_number(val13) or _looks_like_securities_name(val13) or 
+                       _looks_like_person_name(val13) or
+                       (val13 != "-" and not _looks_like_percentage_value(val13) and not _looks_like_large_number(val13) and len(val13) > 3))
+    if is_text_in_pct1:
+        swapped = False
+        # Cari di seluruh baris (0-17), bukan hanya blok 11-17
+        for j in range(num_cols):
+            if j == idx_pct1 or j == idx_pct2:  # Skip kolom persen lainnya
+                continue
+            if _looks_like_percentage_value(get(j)):
+                cells[idx_pct1], cells[j] = get(j), val13
+                swapped = True
+                break
+        # Jika tidak ada nilai persen yang ditemukan, set ke "-"
+        if not swapped:
+            while len(cells) <= idx_pct1:
+                cells.append("-")
+            cells[idx_pct1] = "-"
+
+    # Jika Persentase (2) berisi teks, cari nilai persen di SELURUH BARIS
+    val16 = get(idx_pct2)
+    is_text_in_pct2 = (_looks_like_text_not_number(val16) or _looks_like_securities_name(val16) or 
+                       (val16 != "-" and not _looks_like_percentage_value(val16) and not _looks_like_large_number(val16) and len(val16) > 3))
+    if is_text_in_pct2:
+        swapped = False
+        for j in range(num_cols):
+            if j == idx_pct1 or j == idx_pct2:  # Skip kolom persen lainnya
+                continue
+            if _looks_like_percentage_value(get(j)):
+                cells[idx_pct2], cells[j] = get(j), val16
+                swapped = True
+                break
+        # Jika tidak ada nilai persen yang ditemukan, set ke "-"
+        if not swapped:
+            while len(cells) <= idx_pct2:
+                cells.append("-")
+            cells[idx_pct2] = "-"
+
+    # Jika Perubahan berisi teks (nama pemegang saham dll), lebih agresif
+    val17 = get(idx_perubahan)
+    is_text_in_perubahan = (_looks_like_text_not_number(val17) or _looks_like_person_name(val17) or 
+                           _looks_like_securities_name(val17) or
+                           (val17 != "-" and not _looks_like_percentage_value(val17) and 
+                            not _looks_like_change_value(val17) and not _looks_like_large_number(val17) and len(val17) > 3))
+    if is_text_in_perubahan:
+        # Cari nilai angka yang cocok di blok 11-17 dulu
+        swapped = False
+        for j in range(block_start, block_end):
+            if j == idx_perubahan:
+                continue
+            v = get(j)
+            if _looks_like_change_value(v) and not _looks_like_large_number(v) and not _looks_like_percentage_value(v):
+                cells[idx_perubahan], cells[j] = v, val17
+                swapped = True
+                break
+        # Jika tidak ada atau jelas nama orang/securities, set ke "-"
+        if not swapped or _looks_like_person_name(val17) or _looks_like_securities_name(val17):
+            while len(cells) <= idx_perubahan:
+                cells.append("-")
+            cells[idx_perubahan] = "-"
+
+
+def _fix_persentase_perubahan_cells(cells: list, num_cols: int) -> None:
+    """
+    Koreksi in-place: hanya jika nilai di Perubahan (17) berbentuk persen (mis. 5.00, 11.70)
+    dan kolom Persentase (16) kosong, pindahkan ke kolom 16. Nilai bulat (343, 0) tetap di Perubahan.
+    """
+    if num_cols < 18:
+        return
+    idx_persentase = 16
+    idx_perubahan = 17
+    val_perubahan = (cells[idx_perubahan] if len(cells) > idx_perubahan else "").strip()
+    val_persentase = (cells[idx_persentase] if len(cells) > idx_persentase else "").strip()
+    if not val_perubahan or val_perubahan == "-":
+        return
+    if not _looks_like_percentage_value(val_perubahan):
+        return
+    if not val_persentase or val_persentase == "-":
+        while len(cells) <= idx_persentase:
+            cells.append("-")
+        cells[idx_persentase] = val_perubahan
+    if len(cells) > idx_perubahan:
+        cells[idx_perubahan] = "-"
+
+
+def _merge_continuation_rows(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Gabungkan baris yang No-nya "-" (baris lanjutan/pecahan) ke baris sebelumnya,
+    agar tidak jadi 2–3 baris terpisah. Isi baris lanjutan diisi ke kolom kosong
+    baris utama, dari kanan (nilai terakhir isi Perubahan dll).
+    """
+    if num_cols < 2 or not rows:
+        return rows
+    result = []
+    i = 0
+    while i < len(rows):
+        row = list(rows[i]) if rows[i] else []
+        row = (row + ["-"] * num_cols)[:num_cols]
+        while i + 1 < len(rows):
+            next_row = list(rows[i + 1]) if rows[i + 1] else []
+            next_row = (next_row + ["-"] * num_cols)[:num_cols]
+            no_next = (next_row[0] or "").strip()
+            if no_next and no_next != "-" and _looks_like_no(no_next):
+                break
+            empty_idx = [j for j in range(num_cols) if not (row[j] and str(row[j]).strip() and str(row[j]).strip() != "-")]
+            values = [str(next_row[j]).strip() for j in range(num_cols) if next_row[j] and str(next_row[j]).strip() != "-"]
+            if not values:
+                i += 1
+                continue
+            if len(empty_idx) >= len(values):
+                start = len(empty_idx) - len(values)
+                for k, v in enumerate(values):
+                    row[empty_idx[start + k]] = v
+            else:
+                for k, j in enumerate(empty_idx):
+                    if k < len(values):
+                        row[j] = values[k]
+            i += 1
+        result.append(row)
+        i += 1
+    return result
+
+
+def _dedupe_rows_fill_kode_efek(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Jika dua baris berurutan punya No sama, baris pertama Kode Efek kosong ("-") dan baris kedua
+    punya Kode Efek, salin Kode Efek ke baris pertama dan buang baris kedua (rapikan duplikat).
+    """
+    if num_cols < 3 or not rows:
+        return rows
+    result = []
+    i = 0
+    while i < len(rows):
+        row = list(rows[i]) if rows[i] else []
+        row = (row + ["-"] * num_cols)[:num_cols]
+        if i + 1 < len(rows):
+            next_row = list(rows[i + 1]) if rows[i + 1] else []
+            next_row = (next_row + ["-"] * num_cols)[:num_cols]
+            no_cur = (row[0] or "").strip()
+            no_next = (next_row[0] or "").strip()
+            kode_cur = (row[1] or "").strip()
+            kode_next = (next_row[1] or "").strip()
+            if no_cur and no_cur == no_next and (not kode_cur or kode_cur == "-") and kode_next and _looks_like_stock_code(kode_next):
+                row[1] = kode_next
+                for j in range(2, num_cols):
+                    if (not row[j] or str(row[j]).strip() == "-") and j < len(next_row) and next_row[j] and str(next_row[j]).strip() != "-":
+                        row[j] = next_row[j]
+                i += 2
+                result.append(row)
+                continue
+        result.append(row)
+        i += 1
+    return result
+
+
+def _remove_duplicate_data_rows(raw_data_rows: list[tuple], num_cols: int) -> list[tuple]:
+    """
+    Hapus hanya baris yang benar-benar duplikat (seluruh isi baris sama).
+    Jangan hapus hanya karena No + Kode Efek sama (satu No bisa punya dua baris: atas/bawah
+    dengan Jumlah Saham dan Perubahan berbeda, mis. No 318).
+    """
+    if not raw_data_rows:
+        return raw_data_rows
+    result = []
+    for row_meta in raw_data_rows:
+        cells = list((row_meta[1] if len(row_meta) > 1 else []) + [""] * num_cols)[:num_cols]
+        if result:
+            prev_cells = list((result[-1][1] if len(result[-1]) > 1 else []) + [""] * num_cols)[:num_cols]
+            if len(prev_cells) == len(cells) and all(
+                (str(prev_cells[j] or "").strip() == str(cells[j] or "").strip() for j in range(len(cells)))
+            ):
+                continue
+        result.append(row_meta)
+    return result
+
+
 def _group_spans_into_rows(span_items: list[dict]) -> list[tuple[float, int, list[dict]]]:
     """Kelompokkan span jadi baris: (y_mid, page, list span terurut x). Urutkan (page, y)."""
     if not span_items:
@@ -488,9 +884,13 @@ def _group_spans_into_rows(span_items: list[dict]) -> list[tuple[float, int, lis
 
 def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
     """
-    Baca header tabel dari PDF dengan deteksi kata kunci: baris yang berisi
-    "No", "Kode Efek", "Nama Emiten", "Nama Pemegang Rekening Efek", "Nama Pemegang Saham"
-    (minimal 2 cocok) dipakai sebagai header. Isi data dari teks biru ke kolom yang sesuai.
+    Pendekatan SEDERHANA dan LANGSUNG:
+    1. Ambil semua teks biru dari PDF
+    2. Kelompokkan per baris berdasarkan Y position
+    3. Untuk setiap baris, ambil semua spans biru, urutkan berdasarkan X
+    4. Tempatkan ke kolom berdasarkan posisi X relatif terhadap column boundaries dari header
+    5. Deteksi merge cell dan duplicate ke semua baris yang ter-merge
+    6. Setiap baris HARUS punya 18 kolom (tidak boleh kosong, paling hanya "-")
     """
     all_spans = extract_all_spans_with_bbox(input_path)
     if not all_spans:
@@ -499,70 +899,155 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
     if not rows_raw:
         return []
 
-    # Cari baris pertama yang teksnya mirip header tabel (trigger kata kunci)
+    # Cari baris header
     header_row_idx = None
     for i, (_y, _page, row_spans) in enumerate(rows_raw):
         if _row_looks_like_header(row_spans):
             header_row_idx = i
             break
     if header_row_idx is None:
-        # Fallback: tidak ada baris yang cocok kata kunci, pakai logika lama (hanya biru)
         blue_only = [s for s in all_spans if s.get("is_blue")]
         return build_table_from_spans(blue_only)
 
     header_spans = rows_raw[header_row_idx][2]
 
-    # Bentuk kolom: gabung span yang berdekatan (gap kecil) jadi satu sel header
-    column_boundaries = []
-    header_cells = []
-    cell_texts = []
-    cell_x0 = cell_x1 = None
-    for s in header_spans:
-        bbox = s.get("bbox") or (0, 0, 0, 0)
-        x0, x1 = bbox[0], bbox[2]
-        if cell_x1 is not None and (x0 - cell_x1) > COLUMN_X_GAP:
-            if cell_texts:
-                header_cells.append(" ".join(cell_texts))
-                column_boundaries.append((cell_x0, cell_x1))
-            cell_texts = []
-            cell_x0 = cell_x1 = None
-        cell_texts.append(s.get("text") or "")
-        if cell_x0 is None:
-            cell_x0 = x0
-        cell_x1 = x1
-    if cell_texts:
-        header_cells.append(" ".join(cell_texts))
-        column_boundaries.append((cell_x0, cell_x1))
+    # Kolom mengikuti jumlah alami dari header PDF (tanpa paksa merge/split) agar alignment benar
+    TARGET_COLS = len(TEMPLATE_HEADER_18)  # 18 untuk output tampilan
 
-    if not column_boundaries:
+    def _build_header_cells(gap: float) -> list[dict]:
+        """Gabungkan span header menjadi cell berdasarkan gap X (satu cell per kolom nyata)."""
+        spans_sorted = sorted(header_spans, key=lambda s: (s.get("bbox") or (0, 0, 0, 0))[0])
+        cells: list[dict] = []
+        cur_x0 = None
+        cur_x1 = None
+        cur_texts: list[str] = []
+        for s in spans_sorted:
+            bbox = s.get("bbox") or (0, 0, 0, 0)
+            x0, x1 = float(bbox[0]), float(bbox[2])
+            t = " ".join((s.get("text") or "").split())
+            if not t:
+                continue
+            if cur_x1 is not None and x0 > (cur_x1 + gap):
+                cells.append({"x0": cur_x0, "x1": cur_x1, "text": " ".join(cur_texts).strip()})
+                cur_x0 = None
+                cur_x1 = None
+                cur_texts = []
+            if cur_x0 is None:
+                cur_x0 = x0
+            cur_x1 = x1 if cur_x1 is None else max(cur_x1, x1)
+            cur_texts.append(t)
+        if cur_x1 is not None:
+            cells.append({"x0": cur_x0, "x1": cur_x1, "text": " ".join(cur_texts).strip()})
+        return [c for c in cells if (c.get("x1") is not None and c.get("x0") is not None and c.get("x1") > c.get("x0"))]
+
+    # Pilih gap yang menghasilkan jumlah kolom terbanyak (jangan merge kolom yang terpisah di PDF)
+    gap_candidates = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, float(COLUMN_X_GAP)]
+    best_cells = None
+    for g in gap_candidates:
+        c = _build_header_cells(g)
+        if not c or len(c) < 8:
+            continue
+        if best_cells is None or len(c) > len(best_cells):
+            best_cells = c
+        if len(c) >= 20:
+            break
+
+    if not best_cells:
         blue_only = [s for s in all_spans if s.get("is_blue")]
         return build_table_from_spans(blue_only)
 
-    # (Fungsi Kepemilikan Per dinonaktifkan: tidak memecah sel merged Kepemilikan jadi 3 kolom)
-    num_cols = len(column_boundaries)
-    # Hilangkan celah antar kolom: bagi wilayah antara batas kiri/kanan setiap dua kolom
-    # agar teks yang jatuh di celah tidak salah masuk ke kolom kiri.
-    x_min_all = column_boundaries[0][0]
-    x_max_all = column_boundaries[-1][1]
-    new_boundaries = []
-    for j in range(num_cols):
-        cx0, cx1 = column_boundaries[j]
-        if j == 0:
-            start = x_min_all
-        else:
-            prev_end = column_boundaries[j - 1][1]
-            start = (prev_end + cx0) / 2
-        if j == num_cols - 1:
-            end = x_max_all
-        else:
-            next_start = column_boundaries[j + 1][0]
-            end = (cx1 + next_start) / 2
-        new_boundaries.append((start, end))
-    column_boundaries = new_boundaries
+    header_cells = sorted(best_cells, key=lambda c: c["x0"])
+    # ====== BEST PRACTICE: selalu buat 18 boundary kolom yang nyata ======
+    # Banyak PDF menggabungkan header "Kepemilikan Per ..." sehingga header_cells < 18,
+    # tapi data barisnya tetap punya 18 kolom. Jadi boundary tidak boleh cuma ikut header.
+    #
+    # Strategi:
+    # - Jika header_cells >= 11 (kolom fixed sampai Status), gunakan boundary 11 kolom pertama dari header.
+    # - Sisa lebar tabel (kanan setelah Status) dibagi rata menjadi 7 kolom: 3 + 3 + Perubahan.
+    # - Jika header_cells >= 18, gunakan boundary 18 kolom dari header (paling presisi).
+    # - Fallback: jika header_cells terlalu sedikit, bagi rata seluruh lebar tabel menjadi 18.
+
+    blue_spans_all = [s for s in all_spans if s.get("is_blue") and s.get("bbox")]
+    if blue_spans_all:
+        data_x0_min = min(float((s.get("bbox") or (0, 0, 0, 0))[0]) for s in blue_spans_all)
+        data_x1_max = max(float((s.get("bbox") or (0, 0, 0, 0))[2]) for s in blue_spans_all)
+    else:
+        data_x0_min = float(header_cells[0]["x0"])
+        data_x1_max = float(header_cells[-1]["x1"])
+
+    left_limit = min(float(header_cells[0]["x0"]), data_x0_min) - 2.0
+    right_limit = max(float(header_cells[-1]["x1"]), data_x1_max) + 2.0
+
+    edges: list[float] = []
+    if len(header_cells) >= TARGET_COLS:
+        # Boundary full dari header (18 kolom)
+        hc = header_cells[:TARGET_COLS]
+        edges.append(float(hc[0]["x0"]))
+        for i in range(TARGET_COLS - 1):
+            x1_current = float(hc[i]["x1"])
+            x0_next = float(hc[i + 1]["x0"])
+            edges.append((x1_current + x0_next) / 2)
+        edges.append(float(hc[-1]["x1"]))
+    elif len(header_cells) >= len(TEMPLATE_HEADER_FIXED):
+        # Ambil 11 kolom fixed pertama dari header, lalu bagi kanan menjadi 7 kolom
+        fixed_n = len(TEMPLATE_HEADER_FIXED)  # 11
+        hc = header_cells[:fixed_n]
+        edges.append(float(hc[0]["x0"]))
+        for i in range(fixed_n - 1):
+            x1_current = float(hc[i]["x1"])
+            x0_next = float(hc[i + 1]["x0"])
+            edges.append((x1_current + x0_next) / 2)
+        status_right = float(hc[-1]["x1"])
+        edges.append(status_right)
+        # 7 kolom numerik/perubahan di kanan
+        segs = TARGET_COLS - fixed_n  # 7
+        span = max(1.0, right_limit - status_right)
+        for i in range(1, segs + 1):
+            edges.append(status_right + (i * span / segs))
+    else:
+        # Fallback: bagi rata seluruh lebar menjadi 18 kolom
+        span = max(1.0, right_limit - left_limit)
+        edges = [left_limit + (i * span / TARGET_COLS) for i in range(TARGET_COLS + 1)]
+
+    # Normalisasi edges agar strictly increasing dan pakai left/right limit
+    edges[0] = left_limit
+    edges[-1] = right_limit
+    for i in range(len(edges) - 1):
+        if edges[i] >= edges[i + 1]:
+            edges[i + 1] = edges[i] + 0.1
+
+    column_boundaries = [(edges[i], edges[i + 1]) for i in range(TARGET_COLS)]
+    num_cols = TARGET_COLS
+
+    def _normalize_cell(s: str) -> str:
+        """Trim dan satukan spasi/newline berlebih di isi sel."""
+        if not s or not isinstance(s, str):
+            return ""
+        s = s.strip()
+        # Jika hanya "-", kembalikan kosong
+        if s == "-":
+            return ""
+        return " ".join(s.split())
 
     def column_index_for_span(bbox) -> int:
+        """Tentukan kolom untuk span berdasarkan overlap area maksimum (posisi X di halaman)."""
         x0, _, x1, _ = bbox
         mid_x = (x0 + x1) / 2
+        best_col = None
+        max_overlap = 0.0
+        
+        for j, (cx0, cx1) in enumerate(column_boundaries):
+            overlap_start = max(x0, cx0)
+            overlap_end = min(x1, cx1)
+            if overlap_start < overlap_end:
+                overlap = overlap_end - overlap_start
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    best_col = j
+        
+        if best_col is not None:
+            return best_col
+        # Fallback: kolom yang mengandung mid_x
         for j, (cx0, cx1) in enumerate(column_boundaries):
             if cx0 <= mid_x <= cx1:
                 return j
@@ -575,180 +1060,328 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         cx0, cx1 = column_boundaries[col_idx]
         return not (x1 <= cx0 or x0 >= cx1)
 
-    # Baris header atas (Kepemilikan Per 28-JAN-2026, Kepemilikan Per 29-JAN-2026, dll) untuk 2 baris header
+    # Header top dihapus - tidak perlu tampilkan "Kepemilikan Per tanggal"
     header_top = []
-    top_row_idx = None
-    for idx in range(header_row_idx - 1, -1, -1):
-        if idx < 0:
-            break
-        text_lower = _row_text_lower(rows_raw[idx][2])
-        if "kepemilikan" in text_lower:
-            top_row_idx = idx
-            break
-    if top_row_idx is not None:
-        top_spans = rows_raw[top_row_idx][2]
-        text_lower = _row_text_lower(top_spans)
-        if "kepemilikan" in text_lower:
-            # Tiap span: kolom mana saja yang overlap dengan bbox-nya
-            span_col_ranges = []
-            for s in top_spans:
-                bbox = s.get("bbox") or (0, 0, 0, 0)
-                cols = [j for j in range(num_cols) if _bbox_overlaps_col(bbox, j)]
-                if cols:
-                    span_col_ranges.append((" ".join((s.get("text") or "").split()), min(cols), max(cols)))
-            span_col_ranges.sort(key=lambda x: x[1])
-            # Gabung span yang berdekatan/overlap jadi satu sel
-            merged = []
-            for text, c0, c1 in span_col_ranges:
-                if merged and c0 <= merged[-1][2] + 1:
-                    merged[-1] = (merged[-1][0] + " " + text, merged[-1][1], max(merged[-1][2], c1))
-                else:
-                    merged.append((text.strip(), c0, c1))
-            # Bangun list (text, colspan) urut per kolom: kosong atau satu sel span
-            j = 0
-            while j < num_cols:
-                found = None
-                for (text, c0, c1) in merged:
-                    if c0 <= j <= c1:
-                        found = (text, c0, c1)
-                        break
-                if found:
-                    text, c0, c1 = found
-                    header_top.append({"text": text, "colspan": c1 - c0 + 1})
-                    j = c1 + 1
-                else:
-                    header_top.append({"text": "", "colspan": 1})
-                    j += 1
-        # Pastikan jumlah kolom header_top persis num_cols (kadang overlap bbox beda)
-        total_span = sum(c.get("colspan", 1) for c in header_top)
-        if total_span != num_cols and header_top:
-            if total_span < num_cols:
-                header_top.append({"text": "", "colspan": num_cols - total_span})
-            else:
-                # Kurangi colspan sel terakhir atau tambah sel kosong sampai pas
-                while total_span > num_cols and header_top:
-                    last = header_top[-1]
-                    c = last.get("colspan", 1)
-                    if c > 1:
-                        last["colspan"] = c - 1
-                        total_span -= 1
-                    else:
-                        header_top.pop()
-                        total_span -= 1
-                if total_span < num_cols:
-                    header_top.append({"text": "", "colspan": num_cols - total_span})
 
-    def _normalize_cell(s: str) -> str:
-        """Trim dan satukan spasi/newline berlebih di isi sel."""
-        if not s or not isinstance(s, str):
-            return ""
-        return " ".join(s.split())
-
-    # Baris data: hanya baris di bawah header yang punya teks biru
-    data_rows = []
+    # PENDEKATAN SEDERHANA: Ambil semua spans biru dari baris data, kelompokkan per baris
+    # Kumpulkan semua spans biru dari baris data (setelah header)
+    all_blue_spans = []
     for idx in range(header_row_idx + 1, len(rows_raw)):
         _y, _page, row_spans = rows_raw[idx]
-        if not any(s.get("is_blue") for s in row_spans):
-            continue
-        cells = [""] * num_cols
         for s in row_spans:
-            if not s.get("is_blue"):
-                continue
-            bbox = s.get("bbox") or (0, 0, 0, 0)
-            j = column_index_for_span(bbox)
-            if 0 <= j < num_cols:
+            if s.get("is_blue"):
+                bbox = s.get("bbox") or (0, 0, 0, 0)
                 text = (s.get("text") or "").strip()
-                if not text:
-                    continue
-                if cells[j]:
-                    cells[j] += " " + text
-                else:
-                    cells[j] = text
-        # Normalisasi tiap sel: hilangkan spasi/newline berlebih
+                if text and text != "-":
+                    all_blue_spans.append({
+                        "bbox": bbox,
+                        "text": text,
+                        "page": _page,
+                        "y_mid": (bbox[1] + bbox[3]) / 2,
+                        "x_mid": (bbox[0] + bbox[2]) / 2,
+                        "y0": bbox[1],
+                        "y1": bbox[3],
+                    })
+    
+    if not all_blue_spans:
+        blue_only = [s for s in all_spans if s.get("is_blue")]
+        return build_table_from_spans(blue_only)
+    
+    # Hitung jarak baris normal untuk deteksi merge cell
+    y_positions = sorted(set(s["y_mid"] for s in all_blue_spans))
+    if len(y_positions) > 1:
+        row_gaps = [y_positions[i+1] - y_positions[i] for i in range(len(y_positions)-1)]
+        sorted_gaps = sorted(row_gaps)
+        median_gap = sorted_gaps[len(sorted_gaps) // 2] if sorted_gaps else 10
+        avg_row_gap = median_gap if median_gap > 0 else 10
+    else:
+        avg_row_gap = 10
+    
+    # Clustering Y positions: group Y yang berdekatan
+    y_clusters = []
+    for y_pos in y_positions:
+        found = False
+        for cluster_y in y_clusters:
+            if abs(y_pos - cluster_y) <= ROW_Y_TOLERANCE:
+                found = True
+                break
+        if not found:
+            y_clusters.append(y_pos)
+    y_clusters.sort()
+    
+    # Deteksi merge cells: span dengan tinggi lebih besar dari normal atau overlap dengan multiple clusters
+    merged_cells_info = []
+    for span in all_blue_spans:
+        bbox = span["bbox"]
+        y0, y1 = bbox[1], bbox[3]
+        bbox_height = y1 - y0
+        
+        # Cari semua cluster Y yang overlap dengan bbox ini
+        overlapping_clusters = []
+        for cluster_y in y_clusters:
+            if (y0 - ROW_Y_TOLERANCE <= cluster_y <= y1 + ROW_Y_TOLERANCE):
+                overlapping_clusters.append(cluster_y)
+        
+        # Merge cell jika overlap dengan lebih dari 1 cluster Y atau tinggi > threshold
+        is_merged = (len(overlapping_clusters) > 1 or bbox_height > avg_row_gap * 1.3 or bbox_height > 10)
+        
+        if is_merged:
+            col_idx = column_index_for_span(bbox)
+            if 0 <= col_idx < num_cols:
+                merged_cells_info.append({
+                    "col": col_idx,
+                    "y0": y0,
+                    "y1": y1,
+                    "data": span["text"],
+                    "page": span["page"],
+                    "overlapping_clusters": overlapping_clusters
+                })
+    
+    # Kelompokkan spans per baris berdasarkan cluster Y
+    rows_by_cluster = {}  # {(page, cluster_y): [spans]}
+    for span in all_blue_spans:
+        page = span["page"]
+        y_mid = span["y_mid"]
+        
+        # Cari cluster terdekat
+        cluster_y = None
+        min_dist = float('inf')
+        for cy in y_clusters:
+            dist = abs(y_mid - cy)
+            if dist < min_dist:
+                min_dist = dist
+                cluster_y = cy
+        
+        if cluster_y is None:
+            cluster_y = y_mid
+        
+        key = (page, cluster_y)
+        if key not in rows_by_cluster:
+            rows_by_cluster[key] = []
+        rows_by_cluster[key].append(span)
+    
+    # Proses setiap baris: tentukan kolom dari POSISI bbox (column_index_for_span),
+    # BUKAN dari urutan span. Ini mencegah salah kolom ketika ada kolom kosong di PDF.
+    raw_data_rows = []
+    sorted_row_keys = sorted(rows_by_cluster.keys(), key=lambda k: (k[0], k[1]))
+    
+    for (page, cluster_y) in sorted_row_keys:
+        spans_in_row = rows_by_cluster[(page, cluster_y)]
+        cells = [""] * num_cols
+        for span in spans_in_row:
+            text = (span.get("text") or "").strip()
+            if not text:
+                continue
+            col_idx = column_index_for_span(span["bbox"])
+            if col_idx < 0:
+                col_idx = 0
+            if col_idx >= num_cols:
+                col_idx = num_cols - 1
+            if cells[col_idx]:
+                cells[col_idx] = cells[col_idx] + " " + text
+            else:
+                cells[col_idx] = text
         cells = [_normalize_cell(c) for c in cells]
-        data_rows.append(cells)
-
-    # Fallback 1: baris header utama punya sel berisi "Kepemilikan"
-    if not header_top and header_cells:
-        row_lower = " ".join(c.lower() for c in header_cells)
-        if "kepemilikan" in row_lower:
-            merged_top = []
-            j = 0
-            while j < num_cols:
-                cell = (header_cells[j] if j < len(header_cells) else "") or ""
-                if "kepemilikan" in cell.lower():
-                    k = j
-                    while k < num_cols and "kepemilikan" in ((header_cells[k] if k < len(header_cells) else "") or "").lower():
-                        k += 1
-                    merged_top.append({"text": " ".join(header_cells[j:k]) if k <= len(header_cells) else cell, "colspan": k - j})
-                    j = k
+        if any(c.strip() for c in cells):
+            raw_data_rows.append((cluster_y, cells, page))
+    
+    # Gabungkan baris terpecah: Kode Efek di baris bawah, Nama Emiten salah isi di kolom Kode Efek baris atas
+    raw_data_rows = _merge_split_kode_emiten_rows(raw_data_rows, num_cols)
+    # Hapus baris duplikat (No + Kode Efek sama)
+    raw_data_rows = _remove_duplicate_data_rows(raw_data_rows, num_cols)
+    
+    # Duplicate merge cell data ke semua baris yang ter-merge
+    if merged_cells_info and raw_data_rows:
+        for merge_info in merged_cells_info:
+            col_idx = merge_info["col"]
+            merge_y0 = merge_info["y0"]
+            merge_y1 = merge_info["y1"]
+            merge_data = merge_info["data"]
+            merge_page = merge_info["page"]
+            overlapping_clusters = merge_info.get("overlapping_clusters", [])
+            
+            for row_idx, row_data in enumerate(raw_data_rows):
+                row_cluster_y, row_cells, row_page = row_data
+                
+                if row_page != merge_page:
+                    continue
+                
+                # Cek overlap
+                is_overlapping = False
+                if overlapping_clusters:
+                    is_overlapping = row_cluster_y in overlapping_clusters
                 else:
-                    merged_top.append({"text": "", "colspan": 1})
-                    j += 1
-            if sum(c.get("colspan", 1) for c in merged_top) == num_cols:
-                header_top = merged_top
+                    tolerance = avg_row_gap * 0.4
+                    is_overlapping = (merge_y0 - tolerance <= row_cluster_y <= merge_y1 + tolerance)
+                
+                if is_overlapping:
+                    while len(row_cells) <= col_idx:
+                        row_cells.append("")
+                    
+                    current_cell_data = row_cells[col_idx].strip() if row_cells[col_idx] else ""
+                    
+                    # Jika kolom kosong atau merge_data lebih lengkap, gunakan merge_data
+                    if not current_cell_data:
+                        row_cells[col_idx] = merge_data
+                    elif merge_data != current_cell_data and merge_data not in current_cell_data:
+                        if len(merge_data) >= len(current_cell_data):
+                            row_cells[col_idx] = merge_data
+                    
+                    raw_data_rows[row_idx] = (row_cluster_y, row_cells, row_page)
+    
+    # Konversi ke data_rows - langsung gunakan cells yang sudah ditempatkan ke kolom yang benar
+    data_rows = []
+    for row_data in raw_data_rows:
+        if len(row_data) >= 2:
+            _, row, _ = row_data if len(row_data) == 3 else (None, row_data[1] if len(row_data) > 1 else [], None)
+            if row:
+                # Pastikan row punya tepat num_cols kolom
+                padded_row = (list(row) + [""] * num_cols)[:num_cols]
+                data_rows.append(padded_row)
 
-    # Pisah kolom "No" dan "Kode Efek": sel pertama (e.g. "143 ATLA") -> No="143", Kode Efek="ATLA"
-    def _split_no_kode_efek(cell: str) -> tuple[str, str]:
-        if not cell or not isinstance(cell, str):
-            return ("", "")
-        m = NO_KODE_EFEK_PATTERN.match(cell.strip())
-        if m:
-            return (m.group(1).strip(), m.group(2).strip())
-        return ("", cell.strip())
-
-    _rows = []
-    for row in data_rows:
-        no, kode = _split_no_kode_efek(row[0] if row else "")
-        _rows.append([no, kode] + list(row[1:]))
-    data_rows = _rows
-    num_cols += 1
-    if header_top:
-        header_top = [{"text": "", "colspan": 1}] + header_top
-
-    # PDF hanya memberi ~12 kolom; nilai untuk kolom 12–18 sering gabung di kolom Status & berikutnya.
-    # Pecah isi kolom 10 dan seterusnya jadi token, isi kolom 11–17 agar data sampai kolom 18.
-    TARGET_COLS = len(TEMPLATE_HEADER_18)  # 18
-    FIXED_BEFORE_STATUS = 10  # kolom 0–9: No sampai Domisili
-    if data_rows:
-        expanded = []
-        for row in data_rows:
-            n = len(row)
-            if n >= TARGET_COLS:
-                expanded.append(row[:TARGET_COLS])
-                continue
-            if n <= FIXED_BEFORE_STATUS:
-                expanded.append(list(row) + [""] * (TARGET_COLS - n))
-                continue
-            tail_text = " ".join(str(row[i]).strip() for i in range(FIXED_BEFORE_STATUS, n) if row[i])
-            tokens = tail_text.split()
-            status = ""
-            rest = list(tokens)
-            if tokens and tokens[0] in ("L", "A") and len(tokens[0]) == 1:
-                status = tokens[0]
-                rest = tokens[1:]
-            rest_padded = (rest + [""] * 7)[:7]
-            new_row = list(row[:FIXED_BEFORE_STATUS]) + [status] + rest_padded
-            expanded.append(new_row)
-        data_rows = expanded
-
+    # Finalisasi: pastikan selalu tepat 18 kolom, kosong = "-", dan koreksi Kode Efek/Nama Emiten
     template_header_row = list(TEMPLATE_HEADER_18)
-    if data_rows:
-        data_rows = [
-            (list(row) + [""] * (TARGET_COLS - len(row)))[:TARGET_COLS]
-            for row in data_rows
-        ]
+    final_data_rows = []
+    for row in data_rows:
+        # Pad atau trim ke tepat 18 kolom
+        padded_row = (list(row) + [""] * TARGET_COLS)[:TARGET_COLS]
+        normalized_row = []
+        for cell in padded_row:
+            cell_str = str(cell).strip() if cell else ""
+            if not cell_str or cell_str == "-":
+                normalized_row.append("-")
+            else:
+                normalized_row.append(cell_str)
+        # Jamin panjang tepat 18 (untuk baris yang mungkin kurang)
+        while len(normalized_row) < TARGET_COLS:
+            normalized_row.append("-")
+        normalized_row = normalized_row[:TARGET_COLS]
+        # Koreksi: kolom No jangan terisi kode efek (tukar/pecah/pindah)
+        _fix_no_kode_efek_cells(normalized_row, TARGET_COLS)
+        # Koreksi: jika Kode Efek berisi nama emiten dan Nama Emiten kosong, pindahkan
+        _fix_kode_emiten_cells(normalized_row, TARGET_COLS)
+        # Koreksi: data di kolom Perubahan (18) seharusnya di Persentase Kepemilikan % (17) hanya jika nilai mirip persen
+        _fix_persentase_perubahan_cells(normalized_row, TARGET_COLS)
+        # Koreksi: Persentase (1)/(2) dan Perubahan jangan berisi nama/alamat; tukar dengan nilai yang sesuai di blok 11-17
+        _fix_numeric_block_by_content(normalized_row, TARGET_COLS)
+        final_data_rows.append(normalized_row)
 
-    # Kembalikan: header = template 18 kolom, data = dari PDF (dipad/trim ke 18)
-    if header_top and sum(c.get("colspan", 1) for c in header_top) == num_cols:
-        # Sementara baris Kepemilikan Per tidak ditampilkan
-        return {
-            "header_top": [],
-            "header_row": template_header_row,
-            "data": data_rows,
-        }
-    # Tanpa header atas: format flat (baris pertama = template header, sisanya data dari PDF)
-    return template_header_row + data_rows
+    # Gabungkan baris lanjutan (No "-") ke baris sebelumnya agar tidak jadi 2–3 baris terpisah
+    final_data_rows = _merge_continuation_rows(final_data_rows, TARGET_COLS)
+    # Rapikan Kode Efek: gabungkan baris duplikat No ketika baris pertama Kode Efek "-" dan baris kedua punya kode
+    final_data_rows = _dedupe_rows_fill_kode_efek(final_data_rows, TARGET_COLS)
+    
+    # KOREKSI FINAL: Pastikan Persentase (1)/(2) dan Perubahan tidak berisi teks setelah merge/dedupe
+    # (karena merge/dedupe bisa mengubah data, perlu koreksi ulang)
+    for row in final_data_rows:
+        _fix_numeric_block_by_content(row, TARGET_COLS)
+
+    # Gabung kolom Alamat + Alamat (Lanjutan) jadi satu kolom agar tabel tidak terlalu lebar
+    header_17 = list(template_header_row[:6]) + ["Alamat"] + list(template_header_row[8:])
+    data_17 = []
+    for row in final_data_rows:
+        alamat_merged = ((row[6] or "").strip() + " " + (row[7] or "").strip()).strip() or "-"
+        row_17 = list(row[:6]) + [alamat_merged] + list(row[8:])
+        data_17.append(row_17)
+    
+    # Pastikan semua baris punya panjang 17 kolom sebelum koreksi
+    for i, row_17 in enumerate(data_17):
+        while len(row_17) < 17:
+            row_17.append("-")
+        data_17[i] = row_17[:17]
+    
+    # KOREKSI SETELAH MERGE ALAMAT: Setelah merge, tabel jadi 17 kolom (bukan 18)
+    # Indeks baru: Persentase(1)=12, Persentase(2)=15, Perubahan=16 (bukan 13,16,17)
+    TARGET_COLS_17 = 17
+    idx_pct1_17 = 12  # Sebelumnya 13, setelah merge jadi 12
+    idx_pct2_17 = 15  # Sebelumnya 16, setelah merge jadi 15
+    idx_perubahan_17 = 16  # Sebelumnya 17, setelah merge jadi 16
+    
+    def get_17(i: int, cells: list) -> str:
+        return (cells[i] if i < len(cells) else "").strip() or "-"
+    
+    for idx_row, row_17 in enumerate(data_17):
+        # Pastikan panjang 17 kolom
+        while len(row_17) < TARGET_COLS_17:
+            row_17.append("-")
+        row_17 = row_17[:TARGET_COLS_17]
+        data_17[idx_row] = row_17  # Pastikan perubahan tersimpan
+        
+        # Koreksi Persentase (1) - index 12
+        val12 = get_17(idx_pct1_17, row_17)
+        # Deteksi lebih agresif: jika bukan persen dan bukan angka besar, anggap teks
+        # Termasuk nama orang ("ANDRIANSYAH PRAYITNO", "ADITYA ANTONIUS") dan nama securities
+        is_not_pct = not _looks_like_percentage_value(val12)
+        is_not_large_num = not _looks_like_large_number(val12)
+        is_text_12 = (val12 != "-" and is_not_pct and is_not_large_num and 
+                      (_looks_like_text_not_number(val12) or _looks_like_securities_name(val12) or 
+                       _looks_like_person_name(val12) or len(val12) > 3))
+        if is_text_12:
+            swapped = False
+            # Cari nilai persen di seluruh baris (0-16)
+            for j in range(TARGET_COLS_17):
+                if j == idx_pct1_17 or j == idx_pct2_17:
+                    continue
+                val_j = get_17(j, row_17)
+                if _looks_like_percentage_value(val_j):
+                    row_17[idx_pct1_17], row_17[j] = val_j, val12
+                    swapped = True
+                    break
+            # Jika tidak ada nilai persen yang ditemukan, set ke "-"
+            if not swapped:
+                row_17[idx_pct1_17] = "-"
+            data_17[idx_row] = row_17  # Simpan perubahan
+        
+        # Koreksi Persentase (2) - index 15
+        val15 = get_17(idx_pct2_17, row_17)
+        # Deteksi lebih agresif: jika bukan persen dan bukan angka besar, anggap teks
+        is_not_pct_15 = not _looks_like_percentage_value(val15)
+        is_not_large_num_15 = not _looks_like_large_number(val15)
+        is_text_15 = (val15 != "-" and is_not_pct_15 and is_not_large_num_15 and 
+                      (_looks_like_text_not_number(val15) or _looks_like_securities_name(val15) or 
+                       _looks_like_person_name(val15) or len(val15) > 3))
+        if is_text_15:
+            swapped = False
+            # Cari nilai persen di seluruh baris (0-16)
+            for j in range(TARGET_COLS_17):
+                if j == idx_pct1_17 or j == idx_pct2_17:
+                    continue
+                val_j = get_17(j, row_17)
+                if _looks_like_percentage_value(val_j):
+                    row_17[idx_pct2_17], row_17[j] = val_j, val15
+                    swapped = True
+                    break
+            # Jika tidak ada nilai persen yang ditemukan, set ke "-"
+            if not swapped:
+                row_17[idx_pct2_17] = "-"
+            data_17[idx_row] = row_17  # Simpan perubahan
+        
+        # Koreksi Perubahan - index 16
+        val16 = get_17(idx_perubahan_17, row_17)
+        is_text_16 = (_looks_like_text_not_number(val16) or _looks_like_person_name(val16) or 
+                     _looks_like_securities_name(val16) or
+                     (val16 != "-" and not _looks_like_percentage_value(val16) and 
+                      not _looks_like_change_value(val16) and not _looks_like_large_number(val16) and len(val16) > 3))
+        if is_text_16:
+            swapped = False
+            # Cari di blok numerik (10-16)
+            for j in range(10, TARGET_COLS_17):
+                if j == idx_perubahan_17:
+                    continue
+                v = get_17(j, row_17)
+                if _looks_like_change_value(v) and not _looks_like_large_number(v) and not _looks_like_percentage_value(v):
+                    row_17[idx_perubahan_17], row_17[j] = v, val16
+                    swapped = True
+                    break
+            if not swapped or _looks_like_person_name(val16) or _looks_like_securities_name(val16):
+                row_17[idx_perubahan_17] = "-"
+            data_17[idx_row] = row_17  # Simpan perubahan
+
+    return {
+        "header_top": header_top,
+        "header_row": header_17,
+        "data": data_17,
+    }
 
 
 def build_table_from_spans(span_items: list[dict]) -> list[list[str]]:
@@ -985,8 +1618,18 @@ def extract_blue():
                 "hint": "Pastikan teks benar-benar menggunakan warna biru (bukan hitam/abu-abu)."
             }), 422
         if isinstance(result, dict):
-            table = [result["header_row"]] + result["data"]
-            return jsonify({"table": table, "header_top": result["header_top"]})
+            header_row = result["header_row"] or list(TEMPLATE_HEADER_18)
+            data_rows = result["data"] or []
+            target_cols = len(header_row)
+            # Pastikan header dan setiap baris data punya kolom sesuai header
+            header_row = (list(header_row) + [""] * target_cols)[:target_cols]
+            table = [header_row]
+            for row in data_rows:
+                r = (list(row) + ["-"] * target_cols)[:target_cols]
+                while len(r) < target_cols:
+                    r.append("-")
+                table.append(r[:target_cols])
+            return jsonify({"table": table, "header_top": result.get("header_top") or []})
         return jsonify({"table": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

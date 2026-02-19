@@ -384,7 +384,7 @@
         <button type="button" id="btn-download-pdf">Unduh PDF</button>
       </div>
     </div>
-    <span class="tabel-scroll-label" id="tabel-scroll-label">Geserr tabel ke kiri/kanan di sini (tanpa perlu scroll ke bawah):</span>
+    <span class="tabel-scroll-label" id="tabel-scroll-label">Geser tabel ← / →</span>
     <div id="tabel-scroll-top" class="tabel-scroll-top" aria-label="Scroll horizontal tabel">
       <span id="tabel-scroll-spacer" class="tabel-scroll-spacer"></span>
     </div>
@@ -453,6 +453,7 @@
       });
     }
 
+    const KOLOM_TABEL_STANDAR = 17;
     function renderTabel(table, headerTop) {
       dataTabelTerakhir = table || [];
       tabelHasil.innerHTML = "";
@@ -461,9 +462,21 @@
         kolomFilterList.innerHTML = "";
         return;
       }
-      const numCols = Math.max(...table.map(r => r.length));
-      const headerRow = table[0] || [];
+      const maxLen = Math.max(...table.map(r => (r && r.length) ? r.length : 0));
+      const numCols = Math.max(KOLOM_TABEL_STANDAR, maxLen);
+      const headerRow = (table[0] || []);
+      const headerPadded = headerRow.slice(0, numCols);
+      while (headerPadded.length < numCols) headerPadded.push("Kolom " + (headerPadded.length + 1));
       colVisibility = Array(numCols).fill(true);
+      
+      // Kolom yang defaultnya disembunyikan: Alamat, Kebangsaan, Domisili
+      const kolomDefaultHidden = ["Alamat", "Kebangsaan", "Domisili"];
+      for (let c = 0; c < numCols; c++) {
+        const headerName = (headerPadded[c] || "").trim();
+        if (kolomDefaultHidden.includes(headerName)) {
+          colVisibility[c] = false;
+        }
+      }
 
       const thead = document.createElement("thead");
       if (headerTop && headerTop.length > 0) {
@@ -480,8 +493,9 @@
       for (let c = 0; c < numCols; c++) {
         const th = document.createElement("th");
         th.setAttribute("data-col", String(c));
-        th.classList.add("col-visibility-visible");
-        th.textContent = headerRow.length > c ? (headerRow[c] || "") : ("Kolom " + (c + 1));
+        const visible = colVisibility[c] !== false;
+        th.classList.add(visible ? "col-visibility-visible" : "col-visibility-hidden");
+        th.textContent = headerPadded[c] || ("Kolom " + (c + 1));
         trHead.appendChild(th);
       }
       thead.appendChild(trHead);
@@ -489,11 +503,15 @@
       const tbody = document.createElement("tbody");
       for (let i = 1; i < table.length; i++) {
         const tr = document.createElement("tr");
+        const row = table[i] || [];
+        const rowPadded = row.slice(0, numCols);
+        while (rowPadded.length < numCols) rowPadded.push("-");
         for (let c = 0; c < numCols; c++) {
           const td = document.createElement("td");
           td.setAttribute("data-col", String(c));
-          td.classList.add("col-visibility-visible");
-          td.textContent = table[i].length > c ? (table[i][c] || "") : "";
+          const visible = colVisibility[c] !== false;
+          td.classList.add(visible ? "col-visibility-visible" : "col-visibility-hidden");
+          td.textContent = rowPadded[c] !== undefined && rowPadded[c] !== "" ? rowPadded[c] : "-";
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
@@ -505,14 +523,14 @@
         const label = document.createElement("label");
         const cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.checked = true;
+        cb.checked = colVisibility[c] !== false;
         cb.setAttribute("data-col", String(c));
         cb.addEventListener("change", function () {
           colVisibility[c] = cb.checked;
           applyColumnVisibility();
         });
         label.appendChild(cb);
-        label.appendChild(document.createTextNode(headerRow[c] || ("Kolom " + (c + 1))));
+        label.appendChild(document.createTextNode(headerPadded[c] || ("Kolom " + (c + 1))));
         kolomFilterList.appendChild(label);
       }
 
