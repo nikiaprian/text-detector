@@ -575,6 +575,69 @@ def _fix_split_percentage_cells(cells: list, num_cols: int) -> None:
             cells[idx_pct] = pct_part
 
 
+def _fix_jumlah_saham_split_percentage(cells: list, num_cols: int) -> None:
+    """
+    Jika kolom Jumlah Saham (1) atau (2) berisi "persen angka_besar" (mis. "34.05 37,826,100,852"),
+    pisahkan: persen → Persentase yang sesuai, angka besar tetap di Jumlah Saham.
+    Memperbaiki kasus dimana nilai persen masih terikat dengan angka besar di kolom Jumlah Saham.
+    """
+    if num_cols < 18:
+        return
+    idx_jumlah1 = 11  # Jumlah Saham (1)
+    idx_jumlah2 = 14  # Jumlah Saham (2)
+    idx_pct1 = 13  # Persentase (1)
+    idx_pct2 = 16  # Persentase (2)
+    
+    for idx_jumlah, idx_pct in ((idx_jumlah1, idx_pct1), (idx_jumlah2, idx_pct2)):
+        val_jumlah = (cells[idx_jumlah] if idx_jumlah < len(cells) else "").strip() or "-"
+        if val_jumlah == "-" or not val_jumlah:
+            continue
+        
+        # Cek apakah berisi nilai persen dan angka besar
+        parts = val_jumlah.split()
+        if len(parts) < 2:
+            continue
+        
+        pct_part = None
+        large_part = None
+        
+        # Cek bagian pertama apakah persen
+        first_part = parts[0].strip()
+        if _looks_like_percentage_value(first_part):
+            pct_part = first_part
+            # Gabungkan sisa bagian sebagai angka besar
+            rest_parts = " ".join(parts[1:]).strip()
+            if _looks_like_large_number(rest_parts):
+                large_part = rest_parts
+        
+        # Jika tidak ditemukan di bagian pertama, cek semua bagian
+        if not pct_part:
+            for p in parts:
+                if _looks_like_percentage_value(p):
+                    pct_part = p
+                elif _looks_like_large_number(p):
+                    if not large_part:
+                        large_part = p
+        
+        # Jika ditemukan persen dan Persentase kosong, pindahkan persen
+        if pct_part:
+            val_pct = (cells[idx_pct] if idx_pct < len(cells) else "").strip() or "-"
+            if val_pct == "-" or not val_pct:
+                while len(cells) <= idx_pct:
+                    cells.append("-")
+                cells[idx_pct] = pct_part
+                # Update Jumlah Saham dengan angka besar saja (jika ada)
+                if large_part:
+                    cells[idx_jumlah] = large_part
+                else:
+                    # Jika tidak ada angka besar, hapus persen dari Jumlah Saham
+                    remaining = [p for p in parts if p != pct_part]
+                    if remaining:
+                        cells[idx_jumlah] = " ".join(remaining)
+                    else:
+                        cells[idx_jumlah] = "-"
+
+
 def _fix_perubahan_split_percentage_then_number(cells: list, num_cols: int) -> None:
     """
     Jika kolom Perubahan berisi "X Y" dengan X = persen (36.67, 5.24, 21.95) dan Y = angka
@@ -671,6 +734,8 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
     _fix_perubahan_split_percentage_then_number(cells, num_cols)
     # Pisah sel yang berisi "34.05\n37.826.100.852" dll
     _fix_split_percentage_cells(cells, num_cols)
+    # Pisah nilai persen dari kolom Jumlah Saham yang berisi "persen angka_besar"
+    _fix_jumlah_saham_split_percentage(cells, num_cols)
 
     # Jika Persentase (1) berisi teks (nama rekening efek, nama pemegang saham dll), cari nilai persen di SELURUH BARIS
     val13 = get(idx_pct1)
@@ -688,11 +753,208 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
                 cells[idx_pct1], cells[j] = get(j), val13
                 swapped = True
                 break
-        # Jika tidak ada nilai persen yang ditemukan, set ke "-"
-        if not swapped:
+        # Jika tidak ada nilai persen yang ditemukan, set ke "-" HANYA jika jelas teks (nama/securities)
+        # Jangan set ke "-" jika mungkin angka besar yang salah tempat
+        if not swapped and (_looks_like_securities_name(val13) or _looks_like_person_name(val13)):
             while len(cells) <= idx_pct1:
                 cells.append("-")
             cells[idx_pct1] = "-"
+    
+    # Jika Persentase (1) kosong ("-") atau berisi angka besar yang salah, cari nilai persen di seluruh baris
+    val13_after = get(idx_pct1)
+    if val13_after == "-" or (not _looks_like_percentage_value(val13_after) and _looks_like_large_number(val13_after)):
+        # Cari nilai persen di seluruh baris (termasuk Perubahan)
+        for j in range(num_cols):
+            if j == idx_pct1 or j == idx_pct2:  # Skip kolom persen lainnya
+                continue
+            val_j = get(j)
+            if _looks_like_percentage_value(val_j):
+                # Jika Persentase (1) kosong, pindahkan persen ke sana
+                if val13_after == "-":
+                    cells[idx_pct1] = val_j
+                    if j == idx_perubahan:  # Jika dari Perubahan, kosongkan Perubahan
+                        cells[idx_perubahan] = "-"
+                    else:
+                        cells[j] = "-"
+                # Jika Persentase (1) berisi angka besar, tukar dengan persen
+                elif _looks_like_large_number(val13_after):
+                    cells[idx_pct1], cells[j] = val_j, val13_after
+                break
+
+    # KOREKSI KHUSUS: Hanya jika Persentase (1) berisi persen dan Persentase (2) kosong,
+    # tapi kolom periode 2 terisi, DAN tidak ada nilai persen lain di baris,
+    # DAN periode 1 TIDAK punya data (untuk memastikan nilai tersebut memang untuk periode 2)
+    # CATATAN: Logika ini dibuat lebih konservatif untuk menghindari memindahkan nilai yang seharusnya tetap di (1)
+    val13_check = get(idx_pct1)
+    val16_check = get(idx_pct2)
+    idx_jumlah1 = 11  # Jumlah Saham (1)
+    idx_saham_gab1 = 12  # Saham Gabungan Per Investor (1)
+    idx_jumlah2 = 14  # Jumlah Saham (2)
+    idx_saham_gab2 = 15  # Saham Gabungan Per Investor (2)
+    val_jumlah1 = get(idx_jumlah1)
+    val_saham_gab1 = get(idx_saham_gab1)
+    val_jumlah2 = get(idx_jumlah2)
+    val_saham_gab2 = get(idx_saham_gab2)
+    
+    # Cek apakah ada nilai persen lain di baris (selain di Persentase (1))
+    has_other_percentage = False
+    for j in range(num_cols):
+        if j == idx_pct1 or j == idx_pct2:
+            continue
+        if _looks_like_percentage_value(get(j)):
+            has_other_percentage = True
+            break
+    
+    # Cek apakah periode 1 punya data
+    has_period1_data = ((val_jumlah1 != "-" and val_jumlah1 and _looks_like_large_number(val_jumlah1)) or
+                        (val_saham_gab1 != "-" and val_saham_gab1 and _looks_like_large_number(val_saham_gab1)))
+    
+    # Jika Persentase (1) berisi persen, Persentase (2) kosong, periode 2 punya data,
+    # periode 1 TIDAK punya data, DAN TIDAK ada nilai persen lain di baris, baru pindahkan
+    has_period2_data = ((val_jumlah2 != "-" and val_jumlah2 and _looks_like_large_number(val_jumlah2)) or
+                        (val_saham_gab2 != "-" and val_saham_gab2 and _looks_like_large_number(val_saham_gab2)))
+    
+    if (_looks_like_percentage_value(val13_check) and 
+        (val16_check == "-" or not val16_check) and
+        has_period2_data and
+        not has_period1_data and  # TAMBAHAN: periode 1 tidak punya data
+        not has_other_percentage):  # Hanya jika TIDAK ada nilai persen lain
+        # Pindahkan nilai dari Persentase (1) ke Persentase (2)
+        while len(cells) <= idx_pct2:
+            cells.append("-")
+        cells[idx_pct2] = val13_check
+        cells[idx_pct1] = "-"
+    
+    # KOREKSI: Jika ada nilai persen di kolom yang salah, pindahkan ke kolom Persentase yang sesuai.
+    # Urutan penempatan Persentase (1)/(2) sudah mengikuti kiri-ke-kanan di tahap ekstraksi; di sini hanya perbaiki salah kolom.
+    val13_final = get(idx_pct1)
+    val16_final = get(idx_pct2)
+    percentages_found = []
+    
+    # Kumpulkan semua nilai persen di baris (termasuk yang sudah di kolom Persentase) — format (idx, str, in_col)
+    if _looks_like_percentage_value(val13_final):
+        percentages_found.append((idx_pct1, val13_final, True))
+    if _looks_like_percentage_value(val16_final):
+        percentages_found.append((idx_pct2, val16_final, True))
+    for j in range(num_cols):
+        if j == idx_pct1 or j == idx_pct2:
+            continue
+        val_j = get(j)
+        if _looks_like_percentage_value(val_j):
+            percentages_found.append((j, val_j, False))
+    
+    # Jika Persentase (1) kosong dan ada nilai persen di kolom lain, pindahkan yang pertama ditemukan
+    # Jangan pindahkan dari Persentase (2) jika periode 2 punya data
+    if val13_final == "-" and len(percentages_found) > 0:
+        # Cek apakah periode 2 punya data
+        val_jumlah2 = get(idx_jumlah2)
+        val_saham_gab2 = get(idx_saham_gab2)
+        has_period2_data = ((val_jumlah2 != "-" and val_jumlah2 and _looks_like_large_number(val_jumlah2)) or
+                            (val_saham_gab2 != "-" and val_saham_gab2 and _looks_like_large_number(val_saham_gab2)))
+        
+        # Cari nilai persen di kolom lain (bukan Persentase (2) jika periode 2 punya data)
+        for pct_idx, pct_str, pct_in_col in percentages_found:
+            # Jangan ambil dari Persentase (2) jika periode 2 punya data
+            if pct_in_col and pct_idx == idx_pct2 and has_period2_data:
+                continue
+            # Jika ada nilai persen di kolom lain (bukan Persentase), pindahkan ke (1)
+            if not pct_in_col and pct_idx != idx_pct2:
+                cells[idx_pct1] = pct_str
+                if pct_idx != idx_perubahan:
+                    cells[pct_idx] = "-"
+                break
+            # Jika tidak ada nilai persen lain dan Persentase (2) tidak punya data periode 2, ambil dari (2)
+            elif pct_in_col and pct_idx == idx_pct2 and not has_period2_data:
+                cells[idx_pct1] = pct_str
+                cells[idx_pct2] = "-"
+                break
+    
+    # Jika Persentase (2) kosong dan ada nilai persen lain di kolom lain, pindahkan
+    # TAPI: Prioritas jika periode 2 punya data, maka Persentase (2) harus terisi
+    val16_after = get(idx_pct2)
+    val_jumlah2_after = get(idx_jumlah2)
+    val_saham_gab2_after = get(idx_saham_gab2)
+    has_period2_data_after = ((val_jumlah2_after != "-" and val_jumlah2_after and _looks_like_large_number(val_jumlah2_after)) or
+                              (val_saham_gab2_after != "-" and val_saham_gab2_after and _looks_like_large_number(val_saham_gab2_after)))
+    
+    if (val16_after == "-" or not val16_after):
+        # Jika periode 2 punya data, cari nilai persen untuk Persentase (2)
+        if has_period2_data_after:
+            for j in range(num_cols):
+                if j == idx_pct2 or j == idx_pct1:
+                    continue
+                val_j = get(j)
+                if _looks_like_percentage_value(val_j):
+                    while len(cells) <= idx_pct2:
+                        cells.append("-")
+                    cells[idx_pct2] = val_j
+                    if j != idx_perubahan:
+                        cells[j] = "-"
+                    break
+        # Jika periode 2 tidak punya data, gunakan logika lama (nilai persen kedua)
+        elif len(percentages_found) > 1:
+            found_count = 0
+            for pct_idx, pct_str, pct_in_col in percentages_found:
+                if pct_in_col and pct_idx == idx_pct1:
+                    found_count += 1
+                    continue
+                if not pct_in_col or pct_idx != idx_pct1:
+                    found_count += 1
+                    if found_count == 2:  # Ambil nilai persen kedua
+                        while len(cells) <= idx_pct2:
+                            cells.append("-")
+                        cells[idx_pct2] = pct_str
+                        if not pct_in_col and pct_idx != idx_perubahan:
+                            cells[pct_idx] = "-"
+                        break
+    
+    # PENGECEKAN FINAL: Jika Persentase (1) masih kosong setelah semua koreksi,
+    # cari lagi nilai persen di seluruh baris (mungkin terlewat sebelumnya)
+    # TAPI: Jangan pindahkan dari Persentase (2) jika periode 2 punya data
+    val13_final_check = get(idx_pct1)
+    if val13_final_check == "-":
+        # Cek apakah periode 2 punya data
+        val_jumlah2_check = get(idx_jumlah2)
+        val_saham_gab2_check = get(idx_saham_gab2)
+        has_period2_data_check = ((val_jumlah2_check != "-" and val_jumlah2_check and _looks_like_large_number(val_jumlah2_check)) or
+                                  (val_saham_gab2_check != "-" and val_saham_gab2_check and _looks_like_large_number(val_saham_gab2_check)))
+        
+        # Cari nilai persen di seluruh baris (termasuk yang mungkin terlewat)
+        for j in range(num_cols):
+            if j == idx_pct1:
+                continue
+            # Jangan ambil dari Persentase (2) jika periode 2 punya data
+            if j == idx_pct2 and has_period2_data_check:
+                continue
+            val_j = get(j)
+            if _looks_like_percentage_value(val_j):
+                # Ambil nilai persen pertama yang ditemukan untuk Persentase (1)
+                cells[idx_pct1] = val_j
+                # Jangan kosongkan kolom sumber jika itu Perubahan atau Persentase (2) dengan data periode 2
+                if j != idx_perubahan and not (j == idx_pct2 and has_period2_data_check):
+                    cells[j] = "-"
+                break
+        
+        # PENGECEKAN FINAL: Jika Persentase (2) kosong tapi periode 2 punya data, cari nilai persen untuk (2)
+        val16_final_check = get(idx_pct2)
+        val_jumlah2_final = get(idx_jumlah2)
+        val_saham_gab2_final = get(idx_saham_gab2)
+        has_period2_data_final = ((val_jumlah2_final != "-" and val_jumlah2_final and _looks_like_large_number(val_jumlah2_final)) or
+                                  (val_saham_gab2_final != "-" and val_saham_gab2_final and _looks_like_large_number(val_saham_gab2_final)))
+        
+        if (val16_final_check == "-" or not val16_final_check) and has_period2_data_final:
+            # Cari nilai persen di seluruh baris untuk Persentase (2)
+            for j in range(num_cols):
+                if j == idx_pct2 or j == idx_pct1:
+                    continue
+                val_j = get(j)
+                if _looks_like_percentage_value(val_j):
+                    while len(cells) <= idx_pct2:
+                        cells.append("-")
+                    cells[idx_pct2] = val_j
+                    if j != idx_perubahan:
+                        cells[j] = "-"
+                    break
 
     # Jika Persentase (2) berisi teks, cari nilai persen di SELURUH BARIS
     val16 = get(idx_pct2)
@@ -739,25 +1001,39 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
 
 def _fix_persentase_perubahan_cells(cells: list, num_cols: int) -> None:
     """
-    Koreksi in-place: hanya jika nilai di Perubahan (17) berbentuk persen (mis. 5.00, 11.70)
-    dan kolom Persentase (16) kosong, pindahkan ke kolom 16. Nilai bulat (343, 0) tetap di Perubahan.
+    Koreksi in-place: jika nilai di Perubahan (17) berbentuk persen (mis. 5.00, 11.70),
+    pindahkan ke Persentase (1) atau (2) yang kosong. Prioritas: Persentase (1) dulu, lalu (2).
+    Nilai bulat (343, 0) tetap di Perubahan.
     """
     if num_cols < 18:
         return
-    idx_persentase = 16
+    idx_pct1 = 13
+    idx_pct2 = 16
     idx_perubahan = 17
     val_perubahan = (cells[idx_perubahan] if len(cells) > idx_perubahan else "").strip()
-    val_persentase = (cells[idx_persentase] if len(cells) > idx_persentase else "").strip()
     if not val_perubahan or val_perubahan == "-":
         return
     if not _looks_like_percentage_value(val_perubahan):
         return
-    if not val_persentase or val_persentase == "-":
-        while len(cells) <= idx_persentase:
+    
+    val_pct1 = (cells[idx_pct1] if len(cells) > idx_pct1 else "").strip() or "-"
+    val_pct2 = (cells[idx_pct2] if len(cells) > idx_pct2 else "").strip() or "-"
+    
+    # Prioritas: pindahkan ke Persentase (1) jika kosong
+    if val_pct1 == "-":
+        while len(cells) <= idx_pct1:
             cells.append("-")
-        cells[idx_persentase] = val_perubahan
-    if len(cells) > idx_perubahan:
-        cells[idx_perubahan] = "-"
+        cells[idx_pct1] = val_perubahan
+        if len(cells) > idx_perubahan:
+            cells[idx_perubahan] = "-"
+    # Jika Persentase (1) sudah terisi, pindahkan ke Persentase (2) jika kosong
+    elif val_pct2 == "-":
+        while len(cells) <= idx_pct2:
+            cells.append("-")
+        cells[idx_pct2] = val_perubahan
+        if len(cells) > idx_perubahan:
+            cells[idx_perubahan] = "-"
+    # Jika keduanya sudah terisi, biarkan di Perubahan (mungkin memang untuk Perubahan)
 
 
 def _merge_continuation_rows(rows: list[list], num_cols: int) -> list[list]:
@@ -1160,27 +1436,56 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
             rows_by_cluster[key] = []
         rows_by_cluster[key].append(span)
     
-    # Proses setiap baris: tentukan kolom dari POSISI bbox (column_index_for_span),
-    # BUKAN dari urutan span. Ini mencegah salah kolom ketika ada kolom kosong di PDF.
+    # BEST PRACTICE: Baca data teks biru kiri-ke-kanan, atas-ke-bawah.
+    # Urutan baris = atas ke bawah (sorted_row_keys). Dalam tiap baris, urutan span = kiri ke kanan (sort by x_mid).
+    # Untuk kolom Persentase (1) dan (2): nilai ditempatkan menurut urutan kemunculan (kiri ke kanan), bukan nilai terkecil.
+    idx_pct1_col = 13  # Persentase Kepemilikan Per Investor (%) (1)
+    idx_pct2_col = 16  # Persentase Kepemilikan Per Investor (%) (2)
+    
     raw_data_rows = []
     sorted_row_keys = sorted(rows_by_cluster.keys(), key=lambda k: (k[0], k[1]))
     
     for (page, cluster_y) in sorted_row_keys:
         spans_in_row = rows_by_cluster[(page, cluster_y)]
+        # Urutkan span kiri ke kanan (by x_mid) agar urutan baca = urutan di PDF
+        spans_in_row = sorted(spans_in_row, key=lambda s: (s.get("x_mid") or 0))
+        
         cells = [""] * num_cols
+        # Kumpulkan semua nilai yang mirip persen di baris (dari kolom manapun) beserta posisi X
+        pending_percentages = []  # list of (x_mid, text)
+        
         for span in spans_in_row:
             text = (span.get("text") or "").strip()
             if not text:
                 continue
-            col_idx = column_index_for_span(span["bbox"])
+            bbox = span.get("bbox") or (0, 0, 0, 0)
+            x_mid = (bbox[0] + bbox[2]) / 2
+            col_idx = column_index_for_span(bbox)
             if col_idx < 0:
                 col_idx = 0
             if col_idx >= num_cols:
                 col_idx = num_cols - 1
+            
+            # Setiap nilai yang mirip persen (di blok numerik 11-17) ditunda; ditempatkan menurut urutan kiri-kanan
+            if col_idx >= 11 and _looks_like_percentage_value(text):
+                pending_percentages.append((x_mid, text))
+                continue
+            
+            # Penempatan biasa
             if cells[col_idx]:
                 cells[col_idx] = cells[col_idx] + " " + text
             else:
                 cells[col_idx] = text
+        
+        # Tempatkan nilai persen menurut urutan kiri ke kanan: pertama → Persentase (1), kedua → Persentase (2)
+        pending_percentages.sort(key=lambda x: x[0])
+        for i, (_, pct_text) in enumerate(pending_percentages):
+            if i == 0:
+                cells[idx_pct1_col] = pct_text
+            elif i == 1:
+                cells[idx_pct2_col] = pct_text
+            # jika lebih dari 2, abaikan (kolom sudah terisi)
+        
         cells = [_normalize_cell(c) for c in cells]
         if any(c.strip() for c in cells):
             raw_data_rows.append((cluster_y, cells, page))
@@ -1327,10 +1632,201 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
                     row_17[idx_pct1_17], row_17[j] = val_j, val12
                     swapped = True
                     break
-            # Jika tidak ada nilai persen yang ditemukan, set ke "-"
-            if not swapped:
+            # Jika tidak ada nilai persen yang ditemukan, set ke "-" HANYA jika jelas teks (nama/securities)
+            if not swapped and (_looks_like_securities_name(val12) or _looks_like_person_name(val12)):
                 row_17[idx_pct1_17] = "-"
             data_17[idx_row] = row_17  # Simpan perubahan
+        
+        # Definisikan indeks kolom untuk periode 1 dan 2 (setelah merge alamat)
+        idx_jumlah1_17 = 10  # Jumlah Saham (1) setelah merge = index 10
+        idx_saham_gab1_17 = 11  # Saham Gabungan Per Investor (1) setelah merge = index 11
+        idx_jumlah2_17 = 13  # Jumlah Saham (2) setelah merge = index 13
+        idx_saham_gab2_17 = 14  # Saham Gabungan Per Investor (2) setelah merge = index 14
+        
+        # Pisahkan nilai persen dari kolom Jumlah Saham (1) dan (2) jika ada
+        for idx_jumlah_17, idx_pct_17 in ((idx_jumlah1_17, idx_pct1_17), (idx_jumlah2_17, idx_pct2_17)):
+            val_jumlah_17 = get_17(idx_jumlah_17, row_17)
+            if val_jumlah_17 != "-" and val_jumlah_17:
+                parts = val_jumlah_17.split()
+                if len(parts) >= 2:
+                    first_part = parts[0].strip()
+                    if _looks_like_percentage_value(first_part):
+                        val_pct_17 = get_17(idx_pct_17, row_17)
+                        if val_pct_17 == "-" or not val_pct_17:
+                            row_17[idx_pct_17] = first_part
+                            rest_parts = " ".join(parts[1:]).strip()
+                            if _looks_like_large_number(rest_parts):
+                                row_17[idx_jumlah_17] = rest_parts
+                            else:
+                                row_17[idx_jumlah_17] = rest_parts if rest_parts else "-"
+                            data_17[idx_row] = row_17  # Simpan perubahan
+        
+        # Jika Persentase (1) kosong ("-") atau berisi angka besar yang salah, cari nilai persen di seluruh baris
+        # TAPI: Jangan pindahkan dari Persentase (2) jika periode 2 punya data
+        val12_after = get_17(idx_pct1_17, row_17)
+        val_jumlah2_check = get_17(idx_jumlah2_17, row_17)
+        val_saham_gab2_check = get_17(idx_saham_gab2_17, row_17)
+        has_period2_data_check_17 = ((val_jumlah2_check != "-" and val_jumlah2_check and _looks_like_large_number(val_jumlah2_check)) or
+                                     (val_saham_gab2_check != "-" and val_saham_gab2_check and _looks_like_large_number(val_saham_gab2_check)))
+        
+        if val12_after == "-" or (not _looks_like_percentage_value(val12_after) and _looks_like_large_number(val12_after)):
+            # Cari nilai persen di seluruh baris (termasuk Perubahan), tapi skip Persentase (2) jika periode 2 punya data
+            for j in range(TARGET_COLS_17):
+                if j == idx_pct1_17 or j == idx_pct2_17:  # Skip kolom persen lainnya
+                    continue
+                # Jangan ambil dari Persentase (2) jika periode 2 punya data
+                if j == idx_pct2_17 and has_period2_data_check_17:
+                    continue
+                val_j = get_17(j, row_17)
+                if _looks_like_percentage_value(val_j):
+                    # Jika Persentase (1) kosong, pindahkan persen ke sana
+                    if val12_after == "-":
+                        row_17[idx_pct1_17] = val_j
+                        if j == idx_perubahan_17:  # Jika dari Perubahan, kosongkan Perubahan
+                            row_17[idx_perubahan_17] = "-"
+                        else:
+                            row_17[j] = "-"
+                    # Jika Persentase (1) berisi angka besar, tukar dengan persen
+                    elif _looks_like_large_number(val12_after):
+                        row_17[idx_pct1_17], row_17[j] = val_j, val12_after
+                    data_17[idx_row] = row_17  # Simpan perubahan
+                    break
+        
+        # KOREKSI KHUSUS SETELAH MERGE ALAMAT: Hanya jika Persentase (1) berisi persen dan Persentase (2) kosong,
+        # tapi kolom periode 2 terisi, periode 1 TIDAK punya data, DAN tidak ada nilai persen lain di baris
+        val12_check = get_17(idx_pct1_17, row_17)
+        val15_check = get_17(idx_pct2_17, row_17)
+        val_jumlah1_17 = get_17(idx_jumlah1_17, row_17)
+        val_saham_gab1_17 = get_17(idx_saham_gab1_17, row_17)
+        val_jumlah2_17 = get_17(idx_jumlah2_17, row_17)
+        val_saham_gab2_17 = get_17(idx_saham_gab2_17, row_17)
+        
+        # Cek apakah ada nilai persen lain di baris (selain di Persentase (1))
+        has_other_percentage_17 = False
+        for j in range(TARGET_COLS_17):
+            if j == idx_pct1_17 or j == idx_pct2_17:
+                continue
+            if _looks_like_percentage_value(get_17(j, row_17)):
+                has_other_percentage_17 = True
+                break
+        
+        # Cek apakah periode 1 punya data
+        has_period1_data_17 = ((val_jumlah1_17 != "-" and val_jumlah1_17 and _looks_like_large_number(val_jumlah1_17)) or
+                                (val_saham_gab1_17 != "-" and val_saham_gab1_17 and _looks_like_large_number(val_saham_gab1_17)))
+        
+        has_period2_data_17 = ((val_jumlah2_17 != "-" and val_jumlah2_17 and _looks_like_large_number(val_jumlah2_17)) or
+                                (val_saham_gab2_17 != "-" and val_saham_gab2_17 and _looks_like_large_number(val_saham_gab2_17)))
+        
+        if (_looks_like_percentage_value(val12_check) and 
+            (val15_check == "-" or not val15_check) and
+            has_period2_data_17 and
+            not has_period1_data_17 and  # TAMBAHAN: periode 1 tidak punya data
+            not has_other_percentage_17):  # Hanya jika TIDAK ada nilai persen lain
+            # Pindahkan nilai dari Persentase (1) ke Persentase (2)
+            row_17[idx_pct2_17] = val12_check
+            row_17[idx_pct1_17] = "-"
+            data_17[idx_row] = row_17  # Simpan perubahan
+        
+        # KOREKSI SETELAH MERGE ALAMAT: Jika ada nilai persen di kolom yang salah, pindahkan ke kolom Persentase yang sesuai.
+        # Urutan Persentase (1)/(2) sudah mengikuti kiri-ke-kanan di tahap ekstraksi.
+        val12_final = get_17(idx_pct1_17, row_17)
+        val15_final = get_17(idx_pct2_17, row_17)
+        percentages_found_17 = []
+        if _looks_like_percentage_value(val12_final):
+            percentages_found_17.append((idx_pct1_17, val12_final, True))
+        if _looks_like_percentage_value(val15_final):
+            percentages_found_17.append((idx_pct2_17, val15_final, True))
+        for j in range(TARGET_COLS_17):
+            if j == idx_pct1_17 or j == idx_pct2_17:
+                continue
+            val_j = get_17(j, row_17)
+            if _looks_like_percentage_value(val_j):
+                percentages_found_17.append((j, val_j, False))
+        
+        # Jika Persentase (1) kosong dan ada nilai persen di kolom lain, pindahkan yang pertama ditemukan
+        if val12_final == "-" and len(percentages_found_17) > 0:
+            # Cek apakah periode 2 punya data
+            has_period2_data_for_pct1 = ((val_jumlah2_17 != "-" and val_jumlah2_17 and _looks_like_large_number(val_jumlah2_17)) or
+                                        (val_saham_gab2_17 != "-" and val_saham_gab2_17 and _looks_like_large_number(val_saham_gab2_17)))
+            
+            # Cari nilai persen di kolom lain (bukan Persentase (2) jika periode 2 punya data)
+            for pct_idx, pct_str, pct_in_col in percentages_found_17:
+                # Jangan ambil dari Persentase (2) jika periode 2 punya data
+                if pct_in_col and pct_idx == idx_pct2_17 and has_period2_data_for_pct1:
+                    continue
+                # Jika ada nilai persen di kolom lain (bukan Persentase), pindahkan ke (1)
+                if not pct_in_col and pct_idx != idx_pct2_17:
+                    row_17[idx_pct1_17] = pct_str
+                    if pct_idx != idx_perubahan_17:
+                        row_17[pct_idx] = "-"
+                    data_17[idx_row] = row_17  # Simpan perubahan
+                    break
+                # Jika tidak ada nilai persen lain dan Persentase (2) tidak punya data periode 2, ambil dari (2)
+                elif pct_in_col and pct_idx == idx_pct2_17 and not has_period2_data_for_pct1:
+                    row_17[idx_pct1_17] = pct_str
+                    row_17[idx_pct2_17] = "-"
+                    data_17[idx_row] = row_17  # Simpan perubahan
+                    break
+        
+        # Jika Persentase (2) kosong dan ada nilai persen lain di kolom lain, pindahkan
+        # Skip jika sudah ditangani oleh kasus khusus dua nilai persen dengan kedua periode punya data
+        val15_after = get_17(idx_pct2_17, row_17)
+        if (val15_after == "-" or not val15_after) and len(percentages_found_17) > 1:
+            # Cari nilai persen kedua yang belum di kolom Persentase
+            found_count = 0
+            for pct_idx, pct_str, pct_in_col in percentages_found_17:
+                if pct_in_col and pct_idx == idx_pct1_17:
+                    found_count += 1
+                    continue
+                if not pct_in_col or pct_idx != idx_pct1_17:
+                    found_count += 1
+                    if found_count == 2:  # Ambil nilai persen kedua
+                        row_17[idx_pct2_17] = pct_str
+                        if not pct_in_col and pct_idx != idx_perubahan_17:
+                            row_17[pct_idx] = "-"
+                        data_17[idx_row] = row_17  # Simpan perubahan
+                        break
+        
+        # PENGECEKAN FINAL SETELAH MERGE ALAMAT: Jika Persentase (1) masih kosong setelah semua koreksi,
+        # cari lagi nilai persen di seluruh baris (mungkin terlewat sebelumnya)
+        # TAPI: Jangan pindahkan dari Persentase (2) jika periode 2 punya data
+        val12_final_check = get_17(idx_pct1_17, row_17)
+        if val12_final_check == "-":
+            # Cek apakah periode 2 punya data
+            has_period2_data_final = ((val_jumlah2_17 != "-" and val_jumlah2_17 and _looks_like_large_number(val_jumlah2_17)) or
+                                     (val_saham_gab2_17 != "-" and val_saham_gab2_17 and _looks_like_large_number(val_saham_gab2_17)))
+            
+            # Cari nilai persen di seluruh baris (termasuk yang mungkin terlewat)
+            for j in range(TARGET_COLS_17):
+                if j == idx_pct1_17:
+                    continue
+                # Jangan ambil dari Persentase (2) jika periode 2 punya data
+                if j == idx_pct2_17 and has_period2_data_final:
+                    continue
+                val_j = get_17(j, row_17)
+                if _looks_like_percentage_value(val_j):
+                    # Ambil nilai persen pertama yang ditemukan untuk Persentase (1)
+                    row_17[idx_pct1_17] = val_j
+                    # Jangan kosongkan kolom sumber jika itu Perubahan atau Persentase (2) dengan data periode 2
+                    if j != idx_perubahan_17 and not (j == idx_pct2_17 and has_period2_data_final):
+                        row_17[j] = "-"
+                    data_17[idx_row] = row_17  # Simpan perubahan
+                    break
+        
+        # PENGECEKAN: Jika Persentase (2) kosong tapi periode 2 punya data, cari nilai persen untuk (2)
+        val15_final_check = get_17(idx_pct2_17, row_17)
+        if (val15_final_check == "-" or not val15_final_check) and has_period2_data_17:
+            # Cari nilai persen di seluruh baris untuk Persentase (2)
+            for j in range(TARGET_COLS_17):
+                if j == idx_pct2_17 or j == idx_pct1_17:
+                    continue
+                val_j = get_17(j, row_17)
+                if _looks_like_percentage_value(val_j):
+                    row_17[idx_pct2_17] = val_j
+                    if j != idx_perubahan_17:
+                        row_17[j] = "-"
+                    data_17[idx_row] = row_17  # Simpan perubahan
+                    break
         
         # Koreksi Persentase (2) - index 15
         val15 = get_17(idx_pct2_17, row_17)
