@@ -247,7 +247,7 @@ TEMPLATE_HEADER_FIXED = (
     "Domisili",
     "Status (Lokal/Asing)",
 )
-# Template header 18 kolom (internal); tampilan 17 kolom setelah gabung Alamat.
+# Template header 18 kolom (sama dengan raw data: No … Alamat, Alamat (Lanjutan), … Perubahan).
 # Dua set numerik diberi label (1) dan (2) agar tidak membingungkan.
 TEMPLATE_HEADER_18 = (
     "No",
@@ -1650,13 +1650,39 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
                     
                     current_cell_data = row_cells[col_idx].strip() if row_cells[col_idx] else ""
                     
-                    # Baris kedua dari pasangan No sama: jangan timpa kolom numerik (11-17) agar nilai dari PDF (2,000,000, 0) tetap
-                    if 11 <= col_idx <= 17 and row_idx > 0:
-                        prev_data = raw_data_rows[row_idx - 1]
-                        prev_cells = prev_data[1] if len(prev_data) > 1 else []
-                        prev_no = (prev_cells[0].strip() if prev_cells and len(prev_cells) > 0 else "")
-                        curr_no = (row_cells[0].strip() if row_cells else "")
-                        if prev_no and curr_no == prev_no:
+                    # Kolom Jumlah Saham / Persentase / Perubahan (11-17) bukan merge: baris ke-2, ke-3, ... dalam blok merge
+                    # jangan ditimpa agar nilai dari PDF (318 bawah, 247 bawah, dll.) tetap punya nilai sendiri.
+                    if 11 <= col_idx <= 17:
+                        is_second_or_later_in_block = False
+                        if overlapping_clusters:
+                            try:
+                                pos_in_block = overlapping_clusters.index(row_cluster_y)
+                                is_second_or_later_in_block = pos_in_block > 0
+                            except ValueError:
+                                pass
+                        if not is_second_or_later_in_block and row_idx > 0:
+                            prev_data = raw_data_rows[row_idx - 1]
+                            prev_y = prev_data[0] if len(prev_data) > 0 else None
+                            prev_page = prev_data[2] if len(prev_data) > 2 else row_page
+                            prev_cells = prev_data[1] if len(prev_data) > 1 else []
+                            if (prev_page == row_page and prev_y is not None and
+                                merge_y0 - 1 <= prev_y <= merge_y1 + 1 and
+                                merge_y0 - 1 <= row_cluster_y <= merge_y1 + 1 and
+                                prev_y < row_cluster_y):
+                                is_second_or_later_in_block = True
+                            # Baris hasil split punya cluster_y sama; baris ke-2 jangan ditimpa (318 bawah: 2,000,000)
+                            if prev_page == row_page and prev_y is not None and prev_y == row_cluster_y:
+                                is_second_or_later_in_block = True
+                            # Dua baris dengan No sama (318/707 atas-bawah): baris ke-2 jangan ditimpa
+                            if prev_page == row_page and prev_cells and len(row_cells) > 0:
+                                no_prev = (prev_cells[0] or "").strip()
+                                no_cur = (row_cells[0] or "").strip()
+                                if no_prev and no_prev == no_cur:
+                                    is_second_or_later_in_block = True
+                                # Baris lanjutan (No kosong) ikut baris sebelumnya: jangan timpa
+                                if no_prev and (not no_cur or no_cur == "-"):
+                                    is_second_or_later_in_block = True
+                        if is_second_or_later_in_block:
                             raw_data_rows[row_idx] = (row_cluster_y, row_cells, row_page)
                             continue
                     
@@ -1665,6 +1691,16 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
                         if (_looks_like_large_number(current_cell_data) or
                                 _looks_like_percentage_value(current_cell_data) or
                                 _looks_like_change_value(current_cell_data)):
+                            raw_data_rows[row_idx] = (row_cluster_y, row_cells, row_page)
+                            continue
+                    
+                    # Jumlah Saham (1)/(2) (kolom 11, 14): jangan timpa baris bawah (No sama atau kosong) dengan nilai baris atas
+                    # agar 318 baris bawah tidak dapat 217,279,500/217,622,500 dari merge.
+                    if col_idx in (11, 14) and row_idx > 0:
+                        prev_cells = (raw_data_rows[row_idx - 1][1] if len(raw_data_rows[row_idx - 1]) > 1 else [])
+                        no_prev = (prev_cells[0] or "").strip() if prev_cells else ""
+                        no_cur = (row_cells[0] or "").strip() if row_cells else ""
+                        if no_prev and (no_cur == no_prev or not no_cur or no_cur == "-"):
                             raw_data_rows[row_idx] = (row_cluster_y, row_cells, row_page)
                             continue
                     
@@ -1724,62 +1760,65 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
     for row in final_data_rows:
         _fix_numeric_block_by_content(row, TARGET_COLS)
 
-    # Gabung kolom Alamat + Alamat (Lanjutan) jadi satu kolom agar tabel tidak terlalu lebar
-    header_17 = list(template_header_row[:6]) + ["Alamat"] + list(template_header_row[8:])
-    data_17 = []
+    # BEST PRACTICE: Jangan gabung Alamat — tetap 18 kolom sesuai raw data (No … Perubahan).
+    # Data teks biru sudah ditempatkan per kolom (column_boundaries); tiap baris = 18 sel berurutan.
+    header_18 = list(template_header_row)
+    data_18 = []
     for row in final_data_rows:
-        alamat_merged = ((row[6] or "").strip() + " " + (row[7] or "").strip()).strip() or "-"
-        row_17 = list(row[:6]) + [alamat_merged] + list(row[8:])
-        data_17.append(row_17)
+        row_18 = (list(row) + [""] * TARGET_COLS)[:TARGET_COLS]
+        while len(row_18) < TARGET_COLS:
+            row_18.append("-")
+        row_18 = [str(c).strip() if c else "-" for c in row_18[:TARGET_COLS]]
+        data_18.append(row_18)
     
-    # Pastikan semua baris punya panjang 17 kolom sebelum koreksi
-    for i, row_17 in enumerate(data_17):
-        while len(row_17) < 17:
-            row_17.append("-")
-        data_17[i] = row_17[:17]
+    # Raw data untuk debugging: data mentah setelah ekstraksi (sebelum koreksi baris bawah dll.)
+    raw_data_for_debug = [list(header_18)] + [list(row) for row in data_18]
     
-    # KOREKSI SETELAH MERGE ALAMAT: Setelah merge, tabel jadi 17 kolom (bukan 18)
-    # Indeks baru: Persentase(1)=12, Persentase(2)=15, Perubahan=16 (bukan 13,16,17)
-    TARGET_COLS_17 = 17
-    idx_pct1_17 = 12  # Sebelumnya 13, setelah merge jadi 12
-    idx_pct2_17 = 15  # Sebelumnya 16, setelah merge jadi 15
-    idx_perubahan_17 = 16  # Sebelumnya 17, setelah merge jadi 16
+    # Indeks 18 kolom (sesuai raw): 11=Jumlah(1), 12=Saham Gab(1), 13=Persentase(1), 14=Jumlah(2), 15=Saham Gab(2), 16=Persentase(2), 17=Perubahan
+    TARGET_COLS_18 = TARGET_COLS  # 18
+    idx_pct1_18 = 13
+    idx_pct2_18 = 16
+    idx_perubahan_18 = 17
+    idx_jumlah1_18 = 11
+    idx_saham_gab1_18 = 12
+    idx_jumlah2_18 = 14
+    idx_saham_gab2_18 = 15
     
-    def get_17(i: int, cells: list) -> str:
+    def get_18(i: int, cells: list) -> str:
         return (cells[i] if i < len(cells) else "").strip() or "-"
     
-    # Indeks kolom periode 1 dan 2 (setelah merge alamat) - definisikan sekali agar selalu tersedia
-    idx_jumlah1_17 = 10   # Jumlah Saham (1)
-    idx_saham_gab1_17 = 11  # Saham Gabungan Per Investor (1)
-    idx_jumlah2_17 = 13   # Jumlah Saham (2)
-    idx_saham_gab2_17 = 14  # Saham Gabungan Per Investor (2)
+    def clear_cell_if_safe(r, col_idx):
+        """Jangan kosongkan sel jika berisi angka besar (Jumlah Saham), agar nilai 2,000,000 tidak hilang."""
+        if _looks_like_large_number(get_18(col_idx, r)):
+            return
+        r[col_idx] = "-"
     
-    for idx_row, row_17 in enumerate(data_17):
+    for idx_row, row_18 in enumerate(data_18):
         # Pastikan panjang 17 kolom
-        while len(row_17) < TARGET_COLS_17:
-            row_17.append("-")
-        row_17 = row_17[:TARGET_COLS_17]
-        data_17[idx_row] = row_17  # Pastikan perubahan tersimpan
+        while len(row_18) < TARGET_COLS_18:
+            row_18.append("-")
+        row_18 = row_18[:TARGET_COLS_18]
+        data_18[idx_row] = row_18  # Pastikan perubahan tersimpan
         
         # Jumlah Saham dan Saham Gabungan (10, 11, 13, 14) jangan berisi alamat/nama rekening
-        for j_jar in (idx_jumlah1_17, idx_saham_gab1_17, idx_jumlah2_17, idx_saham_gab2_17):
-            v_jar = get_17(j_jar, row_17)
-            if v_jar != "-" and _looks_like_address_or_wrong_text(v_jar):
-                row_17[j_jar] = "-"
-                data_17[idx_row] = row_17
+        for j_jar in (idx_jumlah1_18, idx_saham_gab1_18, idx_jumlah2_18, idx_saham_gab2_18):
+            v_jar = get_18(j_jar, row_18)
+            if v_jar != "-" and _looks_like_large_number(v_jar) is False and _looks_like_address_or_wrong_text(v_jar):
+                row_18[j_jar] = "-"
+                data_18[idx_row] = row_18
         
         # Jika Persentase (1) berisi dua nilai (mis. "11.74 11.76"), pecah: (1)=nilai pertama, (2)=nilai kedua
-        val12_split = get_17(idx_pct1_17, row_17)
+        val12_split = get_18(idx_pct1_18, row_18)
         if val12_split and " " in val12_split:
             parts = val12_split.split()
             pcts = [p.strip() for p in parts if p.strip() and _looks_like_percentage_value(p.strip())]
-            if len(pcts) >= 2 and (get_17(idx_pct2_17, row_17) == "-" or not get_17(idx_pct2_17, row_17)):
-                row_17[idx_pct1_17] = pcts[0]
-                row_17[idx_pct2_17] = pcts[1]
-                data_17[idx_row] = row_17
+            if len(pcts) >= 2 and (get_18(idx_pct2_18, row_18) == "-" or not get_18(idx_pct2_18, row_18)):
+                row_18[idx_pct1_18] = pcts[0]
+                row_18[idx_pct2_18] = pcts[1]
+                data_18[idx_row] = row_18
         
         # Koreksi Persentase (1) - index 12
-        val12 = get_17(idx_pct1_17, row_17)
+        val12 = get_18(idx_pct1_18, row_18)
         # Deteksi lebih agresif: jika bukan persen dan bukan angka besar, anggap teks
         # Termasuk nama orang ("ANDRIANSYAH PRAYITNO", "ADITYA ANTONIUS") dan nama securities
         is_not_pct = not _looks_like_percentage_value(val12)
@@ -1790,137 +1829,137 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         if is_text_12:
             swapped = False
             # Cari nilai persen di seluruh baris (0-16)
-            for j in range(TARGET_COLS_17):
-                if j == idx_pct1_17 or j == idx_pct2_17:
+            for j in range(TARGET_COLS_18):
+                if j == idx_pct1_18 or j == idx_pct2_18:
                     continue
-                val_j = get_17(j, row_17)
+                val_j = get_18(j, row_18)
                 if _looks_like_percentage_value(val_j):
-                    row_17[idx_pct1_17], row_17[j] = val_j, val12
+                    row_18[idx_pct1_18], row_18[j] = val_j, val12
                     swapped = True
                     break
             # Jika tidak ada nilai persen yang ditemukan, set ke "-" HANYA jika jelas teks (nama/securities)
             if not swapped and (_looks_like_securities_name(val12) or _looks_like_person_name(val12)):
-                row_17[idx_pct1_17] = "-"
-            data_17[idx_row] = row_17  # Simpan perubahan
+                row_18[idx_pct1_18] = "-"
+            data_18[idx_row] = row_18  # Simpan perubahan
         
         # Pisahkan nilai persen dari kolom Jumlah Saham (1) dan (2) jika ada
-        for idx_jumlah_17, idx_pct_17 in ((idx_jumlah1_17, idx_pct1_17), (idx_jumlah2_17, idx_pct2_17)):
-            val_jumlah_17 = get_17(idx_jumlah_17, row_17)
+        for idx_jumlah_17, idx_pct_17 in ((idx_jumlah1_18, idx_pct1_18), (idx_jumlah2_18, idx_pct2_18)):
+            val_jumlah_17 = get_18(idx_jumlah_17, row_18)
             if val_jumlah_17 != "-" and val_jumlah_17:
                 parts = val_jumlah_17.split()
                 if len(parts) >= 2:
                     first_part = parts[0].strip()
                     if _looks_like_percentage_value(first_part):
-                        val_pct_17 = get_17(idx_pct_17, row_17)
+                        val_pct_17 = get_18(idx_pct_17, row_18)
                         if val_pct_17 == "-" or not val_pct_17:
-                            row_17[idx_pct_17] = first_part
+                            row_18[idx_pct_17] = first_part
                             rest_parts = " ".join(parts[1:]).strip()
                             if _looks_like_large_number(rest_parts):
-                                row_17[idx_jumlah_17] = rest_parts
+                                row_18[idx_jumlah_17] = rest_parts
                             else:
-                                row_17[idx_jumlah_17] = rest_parts if rest_parts else "-"
-                            data_17[idx_row] = row_17  # Simpan perubahan
+                                row_18[idx_jumlah_17] = rest_parts if rest_parts else "-"
+                            data_18[idx_row] = row_18  # Simpan perubahan
         
         # Jika Persentase (1) kosong ("-") atau berisi angka besar yang salah, cari nilai persen di seluruh baris
         # TAPI: Jangan pindahkan dari Persentase (2) jika periode 2 punya data
-        val12_after = get_17(idx_pct1_17, row_17)
-        val_jumlah2_check = get_17(idx_jumlah2_17, row_17)
-        val_saham_gab2_check = get_17(idx_saham_gab2_17, row_17)
+        val12_after = get_18(idx_pct1_18, row_18)
+        val_jumlah2_check = get_18(idx_jumlah2_18, row_18)
+        val_saham_gab2_check = get_18(idx_saham_gab2_18, row_18)
         has_period2_data_check_17 = ((val_jumlah2_check != "-" and val_jumlah2_check and _looks_like_large_number(val_jumlah2_check)) or
                                      (val_saham_gab2_check != "-" and val_saham_gab2_check and _looks_like_large_number(val_saham_gab2_check)))
         
         if val12_after == "-" or (not _looks_like_percentage_value(val12_after) and _looks_like_large_number(val12_after)):
             # Cari nilai persen di seluruh baris (termasuk Perubahan), tapi skip Persentase (2) jika periode 2 punya data
-            for j in range(TARGET_COLS_17):
-                if j == idx_pct1_17 or j == idx_pct2_17:  # Skip kolom persen lainnya
+            for j in range(TARGET_COLS_18):
+                if j == idx_pct1_18 or j == idx_pct2_18:  # Skip kolom persen lainnya
                     continue
                 # Jangan ambil dari Persentase (2) jika periode 2 punya data
-                if j == idx_pct2_17 and has_period2_data_check_17:
+                if j == idx_pct2_18 and has_period2_data_check_17:
                     continue
-                val_j = get_17(j, row_17)
+                val_j = get_18(j, row_18)
                 if _looks_like_percentage_value(val_j):
                     # Jika Persentase (1) kosong, pindahkan persen ke sana
                     if val12_after == "-":
-                        row_17[idx_pct1_17] = val_j
-                        if j == idx_perubahan_17:  # Jika dari Perubahan, kosongkan Perubahan
-                            row_17[idx_perubahan_17] = "-"
+                        row_18[idx_pct1_18] = val_j
+                        if j == idx_perubahan_18:  # Jika dari Perubahan, kosongkan Perubahan
+                            row_18[idx_perubahan_18] = "-"
                         else:
-                            row_17[j] = "-"
+                            clear_cell_if_safe(row_18, j)
                     # Jika Persentase (1) berisi angka besar, tukar dengan persen
                     elif _looks_like_large_number(val12_after):
-                        row_17[idx_pct1_17], row_17[j] = val_j, val12_after
-                    data_17[idx_row] = row_17  # Simpan perubahan
+                        row_18[idx_pct1_18], row_18[j] = val_j, val12_after
+                    data_18[idx_row] = row_18  # Simpan perubahan
                     break
         
         # KOREKSI KHUSUS SETELAH MERGE ALAMAT: Hanya jika Persentase (1) berisi persen dan Persentase (2) kosong,
         # tapi kolom periode 2 terisi, periode 1 TIDAK punya data, DAN tidak ada nilai persen lain di baris
-        val12_check = get_17(idx_pct1_17, row_17)
-        val15_check = get_17(idx_pct2_17, row_17)
-        val_jumlah1_17 = get_17(idx_jumlah1_17, row_17)
-        val_saham_gab1_17 = get_17(idx_saham_gab1_17, row_17)
-        val_jumlah2_17 = get_17(idx_jumlah2_17, row_17)
-        val_saham_gab2_17 = get_17(idx_saham_gab2_17, row_17)
+        val12_check = get_18(idx_pct1_18, row_18)
+        val15_check = get_18(idx_pct2_18, row_18)
+        val_jumlah1_17 = get_18(idx_jumlah1_18, row_18)
+        val_saham_gab1_17 = get_18(idx_saham_gab1_18, row_18)
+        val_jumlah2_17 = get_18(idx_jumlah2_18, row_18)
+        val_saham_gab2_17 = get_18(idx_saham_gab2_18, row_18)
         
         # Cek apakah ada nilai persen lain di baris (selain di Persentase (1))
         has_other_percentage_17 = False
-        for j in range(TARGET_COLS_17):
-            if j == idx_pct1_17 or j == idx_pct2_17:
+        for j in range(TARGET_COLS_18):
+            if j == idx_pct1_18 or j == idx_pct2_18:
                 continue
-            if _looks_like_percentage_value(get_17(j, row_17)):
+            if _looks_like_percentage_value(get_18(j, row_18)):
                 has_other_percentage_17 = True
                 break
         
         # Cek apakah periode 1 punya data
-        has_period1_data_17 = ((val_jumlah1_17 != "-" and val_jumlah1_17 and _looks_like_large_number(val_jumlah1_17)) or
+        has_period1_data_18 = ((val_jumlah1_17 != "-" and val_jumlah1_17 and _looks_like_large_number(val_jumlah1_17)) or
                                 (val_saham_gab1_17 != "-" and val_saham_gab1_17 and _looks_like_large_number(val_saham_gab1_17)))
         
-        has_period2_data_17 = ((val_jumlah2_17 != "-" and val_jumlah2_17 and _looks_like_large_number(val_jumlah2_17)) or
+        has_period2_data_18 = ((val_jumlah2_17 != "-" and val_jumlah2_17 and _looks_like_large_number(val_jumlah2_17)) or
                                 (val_saham_gab2_17 != "-" and val_saham_gab2_17 and _looks_like_large_number(val_saham_gab2_17)))
         
         if (_looks_like_percentage_value(val12_check) and 
             (val15_check == "-" or not val15_check) and
-            has_period2_data_17 and
-            not has_period1_data_17 and  # TAMBAHAN: periode 1 tidak punya data
+            has_period2_data_18 and
+            not has_period1_data_18 and  # TAMBAHAN: periode 1 tidak punya data
             not has_other_percentage_17):  # Hanya jika TIDAK ada nilai persen lain
             # Pindahkan nilai dari Persentase (1) ke Persentase (2)
-            row_17[idx_pct2_17] = val12_check
-            row_17[idx_pct1_17] = "-"
-            data_17[idx_row] = row_17  # Simpan perubahan
+            row_18[idx_pct2_18] = val12_check
+            row_18[idx_pct1_18] = "-"
+            data_18[idx_row] = row_18  # Simpan perubahan
         
         # KOREKSI 318: Kedua periode punya data, (1) terisi tapi (2) kosong, dan ada nilai persen lain di baris.
         # Nilai yang sekarang di (1) seharusnya di (2); nilai di kolom lain (mis. Perubahan) seharusnya di (1).
-        if (has_period1_data_17 and has_period2_data_17 and
-            _looks_like_percentage_value(get_17(idx_pct1_17, row_17)) and
-            (get_17(idx_pct2_17, row_17) == "-" or not get_17(idx_pct2_17, row_17))):
-            pct_in_col1 = get_17(idx_pct1_17, row_17)
+        if (has_period1_data_18 and has_period2_data_18 and
+            _looks_like_percentage_value(get_18(idx_pct1_18, row_18)) and
+            (get_18(idx_pct2_18, row_18) == "-" or not get_18(idx_pct2_18, row_18))):
+            pct_in_col1 = get_18(idx_pct1_18, row_18)
             other_pct_col = None
             other_pct_val = None
-            for j in range(TARGET_COLS_17):
-                if j == idx_pct1_17 or j == idx_pct2_17:
+            for j in range(TARGET_COLS_18):
+                if j == idx_pct1_18 or j == idx_pct2_18:
                     continue
-                v = get_17(j, row_17)
+                v = get_18(j, row_18)
                 if _looks_like_percentage_value(v):
                     other_pct_col, other_pct_val = j, v
                     break
             if other_pct_col is not None and other_pct_val is not None:
-                row_17[idx_pct1_17] = other_pct_val   # nilai dari kolom lain → (1)
-                row_17[idx_pct2_17] = pct_in_col1     # nilai yang tadinya di (1) → (2)
-                row_17[other_pct_col] = "-"
-                data_17[idx_row] = row_17
+                row_18[idx_pct1_18] = other_pct_val   # nilai dari kolom lain → (1)
+                row_18[idx_pct2_18] = pct_in_col1     # nilai yang tadinya di (1) → (2)
+                clear_cell_if_safe(row_18, other_pct_col)
+                data_18[idx_row] = row_18
         
         # KOREKSI SETELAH MERGE ALAMAT: Jika ada nilai persen di kolom yang salah, pindahkan ke kolom Persentase yang sesuai.
         # Urutan Persentase (1)/(2) sudah mengikuti kiri-ke-kanan di tahap ekstraksi.
-        val12_final = get_17(idx_pct1_17, row_17)
-        val15_final = get_17(idx_pct2_17, row_17)
+        val12_final = get_18(idx_pct1_18, row_18)
+        val15_final = get_18(idx_pct2_18, row_18)
         percentages_found_17 = []
         if _looks_like_percentage_value(val12_final):
-            percentages_found_17.append((idx_pct1_17, val12_final, True))
+            percentages_found_17.append((idx_pct1_18, val12_final, True))
         if _looks_like_percentage_value(val15_final):
-            percentages_found_17.append((idx_pct2_17, val15_final, True))
-        for j in range(TARGET_COLS_17):
-            if j == idx_pct1_17 or j == idx_pct2_17:
+            percentages_found_17.append((idx_pct2_18, val15_final, True))
+        for j in range(TARGET_COLS_18):
+            if j == idx_pct1_18 or j == idx_pct2_18:
                 continue
-            val_j = get_17(j, row_17)
+            val_j = get_18(j, row_18)
             if _looks_like_percentage_value(val_j):
                 percentages_found_17.append((j, val_j, False))
         
@@ -1933,92 +1972,92 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
             # Cari nilai persen di kolom lain (bukan Persentase (2) jika periode 2 punya data)
             for pct_idx, pct_str, pct_in_col in percentages_found_17:
                 # Jangan ambil dari Persentase (2) jika periode 2 punya data
-                if pct_in_col and pct_idx == idx_pct2_17 and has_period2_data_for_pct1:
+                if pct_in_col and pct_idx == idx_pct2_18 and has_period2_data_for_pct1:
                     continue
                 # Jika ada nilai persen di kolom lain (bukan Persentase), pindahkan ke (1)
-                if not pct_in_col and pct_idx != idx_pct2_17:
-                    row_17[idx_pct1_17] = pct_str
-                    if pct_idx != idx_perubahan_17:
-                        row_17[pct_idx] = "-"
-                    data_17[idx_row] = row_17  # Simpan perubahan
+                if not pct_in_col and pct_idx != idx_pct2_18:
+                    row_18[idx_pct1_18] = pct_str
+                    if pct_idx != idx_perubahan_18:
+                        clear_cell_if_safe(row_18, pct_idx)
+                    data_18[idx_row] = row_18  # Simpan perubahan
                     break
                 # Jika tidak ada nilai persen lain dan Persentase (2) tidak punya data periode 2, ambil dari (2)
-                elif pct_in_col and pct_idx == idx_pct2_17 and not has_period2_data_for_pct1:
-                    row_17[idx_pct1_17] = pct_str
-                    row_17[idx_pct2_17] = "-"
-                    data_17[idx_row] = row_17  # Simpan perubahan
+                elif pct_in_col and pct_idx == idx_pct2_18 and not has_period2_data_for_pct1:
+                    row_18[idx_pct1_18] = pct_str
+                    row_18[idx_pct2_18] = "-"
+                    data_18[idx_row] = row_18  # Simpan perubahan
                     break
         
         # Jika Persentase (2) kosong dan ada nilai persen lain di kolom lain, pindahkan
         # Skip jika sudah ditangani oleh kasus khusus dua nilai persen dengan kedua periode punya data
-        val15_after = get_17(idx_pct2_17, row_17)
+        val15_after = get_18(idx_pct2_18, row_18)
         if (val15_after == "-" or not val15_after) and len(percentages_found_17) > 1:
             # Cari nilai persen kedua yang belum di kolom Persentase
             found_count = 0
             for pct_idx, pct_str, pct_in_col in percentages_found_17:
-                if pct_in_col and pct_idx == idx_pct1_17:
+                if pct_in_col and pct_idx == idx_pct1_18:
                     found_count += 1
                     continue
-                if not pct_in_col or pct_idx != idx_pct1_17:
+                if not pct_in_col or pct_idx != idx_pct1_18:
                     found_count += 1
                     if found_count == 2:  # Ambil nilai persen kedua
-                        row_17[idx_pct2_17] = pct_str
-                        if not pct_in_col and pct_idx != idx_perubahan_17:
-                            row_17[pct_idx] = "-"
-                        data_17[idx_row] = row_17  # Simpan perubahan
+                        row_18[idx_pct2_18] = pct_str
+                        if not pct_in_col and pct_idx != idx_perubahan_18:
+                            clear_cell_if_safe(row_18, pct_idx)
+                        data_18[idx_row] = row_18  # Simpan perubahan
                         break
         
         # PENGECEKAN FINAL SETELAH MERGE ALAMAT: Jika Persentase (1) masih kosong setelah semua koreksi,
         # cari lagi nilai persen di seluruh baris (mungkin terlewat sebelumnya)
         # TAPI: Jangan isi Persentase (1) jika periode 1 TIDAK punya data (mis. baris 247: (1) harus tetap "-")
-        val12_final_check = get_17(idx_pct1_17, row_17)
-        if val12_final_check == "-" and has_period1_data_17:
+        val12_final_check = get_18(idx_pct1_18, row_18)
+        if val12_final_check == "-" and has_period1_data_18:
             # Cek apakah periode 2 punya data
             has_period2_data_final = ((val_jumlah2_17 != "-" and val_jumlah2_17 and _looks_like_large_number(val_jumlah2_17)) or
                                      (val_saham_gab2_17 != "-" and val_saham_gab2_17 and _looks_like_large_number(val_saham_gab2_17)))
             
             # Cari nilai persen di seluruh baris (termasuk yang mungkin terlewat)
-            for j in range(TARGET_COLS_17):
-                if j == idx_pct1_17:
+            for j in range(TARGET_COLS_18):
+                if j == idx_pct1_18:
                     continue
                 # Jangan ambil dari Persentase (2) jika periode 2 punya data
-                if j == idx_pct2_17 and has_period2_data_final:
+                if j == idx_pct2_18 and has_period2_data_final:
                     continue
-                val_j = get_17(j, row_17)
+                val_j = get_18(j, row_18)
                 if _looks_like_percentage_value(val_j):
                     # Ambil nilai persen pertama yang ditemukan untuk Persentase (1)
-                    row_17[idx_pct1_17] = val_j
-                    # Jangan kosongkan kolom sumber jika itu Perubahan atau Persentase (2) dengan data periode 2
-                    if j != idx_perubahan_17 and not (j == idx_pct2_17 and has_period2_data_final):
-                        row_17[j] = "-"
-                    data_17[idx_row] = row_17  # Simpan perubahan
+                    row_18[idx_pct1_18] = val_j
+                    # Jangan kosongkan kolom sumber jika itu Perubahan atau Persentase (2) dengan data periode 2, atau berisi angka besar
+                    if j != idx_perubahan_18 and not (j == idx_pct2_18 and has_period2_data_final):
+                        clear_cell_if_safe(row_18, j)
+                    data_18[idx_row] = row_18  # Simpan perubahan
                     break
         # Paksa: jika periode 1 TIDAK punya data, Persentase (1) harus "-" (contoh: baris 247).
         # Jangan kosongkan jika baris sudah punya kedua persen (1) dan (2) dari ekstraksi PDF (mis. 318 atas).
-        val1_now = get_17(idx_pct1_17, row_17)
-        val2_now = get_17(idx_pct2_17, row_17)
+        val1_now = get_18(idx_pct1_18, row_18)
+        val2_now = get_18(idx_pct2_18, row_18)
         both_pct_filled = _looks_like_percentage_value(val1_now) and _looks_like_percentage_value(val2_now)
-        if not has_period1_data_17 and not both_pct_filled:
-            row_17[idx_pct1_17] = "-"
-            data_17[idx_row] = row_17
+        if not has_period1_data_18 and not both_pct_filled:
+            row_18[idx_pct1_18] = "-"
+            data_18[idx_row] = row_18
         
         # PENGECEKAN: Jika Persentase (2) kosong tapi periode 2 punya data, cari nilai persen untuk (2)
-        val15_final_check = get_17(idx_pct2_17, row_17)
-        if (val15_final_check == "-" or not val15_final_check) and has_period2_data_17:
+        val15_final_check = get_18(idx_pct2_18, row_18)
+        if (val15_final_check == "-" or not val15_final_check) and has_period2_data_18:
             # Cari nilai persen di seluruh baris untuk Persentase (2)
-            for j in range(TARGET_COLS_17):
-                if j == idx_pct2_17 or j == idx_pct1_17:
+            for j in range(TARGET_COLS_18):
+                if j == idx_pct2_18 or j == idx_pct1_18:
                     continue
-                val_j = get_17(j, row_17)
+                val_j = get_18(j, row_18)
                 if _looks_like_percentage_value(val_j):
-                    row_17[idx_pct2_17] = val_j
-                    if j != idx_perubahan_17:
-                        row_17[j] = "-"
-                    data_17[idx_row] = row_17  # Simpan perubahan
+                    row_18[idx_pct2_18] = val_j
+                    if j != idx_perubahan_18:
+                        clear_cell_if_safe(row_18, j)
+                    data_18[idx_row] = row_18  # Simpan perubahan
                     break
         
         # Koreksi Persentase (2) - index 15
-        val15 = get_17(idx_pct2_17, row_17)
+        val15 = get_18(idx_pct2_18, row_18)
         # Deteksi lebih agresif: jika bukan persen dan bukan angka besar, anggap teks
         is_not_pct_15 = not _looks_like_percentage_value(val15)
         is_not_large_num_15 = not _looks_like_large_number(val15)
@@ -2028,129 +2067,319 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         if is_text_15:
             swapped = False
             # Cari nilai persen di seluruh baris (0-16)
-            for j in range(TARGET_COLS_17):
-                if j == idx_pct1_17 or j == idx_pct2_17:
+            for j in range(TARGET_COLS_18):
+                if j == idx_pct1_18 or j == idx_pct2_18:
                     continue
-                val_j = get_17(j, row_17)
+                val_j = get_18(j, row_18)
                 if _looks_like_percentage_value(val_j):
-                    row_17[idx_pct2_17], row_17[j] = val_j, val15
+                    row_18[idx_pct2_18], row_18[j] = val_j, val15
                     swapped = True
                     break
             # Jika tidak ada nilai persen yang ditemukan, set ke "-" hanya jika nilai saat ini memang bukan persen
             if not swapped and not _looks_like_percentage_value(val15):
-                row_17[idx_pct2_17] = "-"
-            data_17[idx_row] = row_17  # Simpan perubahan
+                row_18[idx_pct2_18] = "-"
+            data_18[idx_row] = row_18  # Simpan perubahan
 
         # Koreksi Perubahan - index 16
-        val16 = get_17(idx_perubahan_17, row_17)
+        val16 = get_18(idx_perubahan_18, row_18)
         is_text_16 = (_looks_like_text_not_number(val16) or _looks_like_person_name(val16) or 
                      _looks_like_securities_name(val16) or
                      (val16 != "-" and not _looks_like_percentage_value(val16) and 
                       not _looks_like_change_value(val16) and not _looks_like_large_number(val16) and len(val16) > 3))
         if is_text_16:
             swapped = False
-            # Cari di blok numerik (10-16)
-            for j in range(10, TARGET_COLS_17):
-                if j == idx_perubahan_17:
+            # Cari di blok numerik (11-17)
+            for j in range(11, TARGET_COLS_18):
+                if j == idx_perubahan_18:
                     continue
-                v = get_17(j, row_17)
+                v = get_18(j, row_18)
                 if _looks_like_change_value(v) and not _looks_like_large_number(v) and not _looks_like_percentage_value(v):
-                    row_17[idx_perubahan_17], row_17[j] = v, val16
+                    row_18[idx_perubahan_18], row_18[j] = v, val16
                     swapped = True
                     break
             if not swapped or _looks_like_person_name(val16) or _looks_like_securities_name(val16):
-                row_17[idx_perubahan_17] = "-"
-            data_17[idx_row] = row_17  # Simpan perubahan
+                row_18[idx_perubahan_18] = "-"
+            data_18[idx_row] = row_18  # Simpan perubahan
 
         # Perubahan tidak boleh berisi nilai yang sama dengan Persentase (2) (nilai persen).
         # Contoh: no 318 bawah — Perubahan salah berisi 11.76 yang seharusnya hanya di kolom (2).
-        val16_after = get_17(idx_perubahan_17, row_17)
-        val_pct2_17 = get_17(idx_pct2_17, row_17)
-        if (val16_after != "-" and val_pct2_17 != "-" and
+        val16_after = get_18(idx_perubahan_18, row_18)
+        val_pct2_18 = get_18(idx_pct2_18, row_18)
+        if (val16_after != "-" and val_pct2_18 != "-" and
             _looks_like_percentage_value(val16_after) and
-            str(val16_after).strip() == str(val_pct2_17).strip()):
-            row_17[idx_perubahan_17] = "-"
-            data_17[idx_row] = row_17
+            str(val16_after).strip() == str(val_pct2_18).strip()):
+            row_18[idx_perubahan_18] = "-"
+            data_18[idx_row] = row_18
+
+        # Perubahan tidak boleh berisi satu huruf (mis. "L" dari kolom Status yang salah tempat)
+        v16 = get_18(idx_perubahan_18, row_18)
+        if v16 and len(v16.strip()) == 1 and v16.strip().isalpha():
+            row_18[idx_perubahan_18] = "-"
+            data_18[idx_row] = row_18
 
     # KOREKSI BARIS KEMBAR NO: Hanya ketika nilai di (1) baris atas sama dengan (2) baris bawah (salah kolom),
     # baru pindahkan: atas (1)=bawah(1), atas (2)=atas(1). Jangan overwrite 318 atas (11.74, 11.76) dengan bawah (11.14, 11.78).
-    idx_no_17 = 0
-    for i in range(len(data_17) - 1):
-        row_upper = data_17[i]
-        row_lower = data_17[i + 1]
-        no_upper = get_17(idx_no_17, row_upper)
-        no_lower = get_17(idx_no_17, row_lower)
+    idx_no_18 = 0
+    for i in range(len(data_18) - 1):
+        row_upper = data_18[i]
+        row_lower = data_18[i + 1]
+        no_upper = get_18(idx_no_18, row_upper)
+        no_lower = get_18(idx_no_18, row_lower)
         if no_upper != no_lower or not no_upper or no_upper == "-":
             continue
-        pct1_upper = get_17(idx_pct1_17, row_upper)
-        pct2_upper = get_17(idx_pct2_17, row_upper)
-        pct1_lower = get_17(idx_pct1_17, row_lower)
-        pct2_lower = get_17(idx_pct2_17, row_lower)
+        pct1_upper = get_18(idx_pct1_18, row_upper)
+        pct2_upper = get_18(idx_pct2_18, row_upper)
+        pct1_lower = get_18(idx_pct1_18, row_lower)
+        pct2_lower = get_18(idx_pct2_18, row_lower)
         if (_looks_like_percentage_value(pct1_upper) and (pct2_upper == "-" or not pct2_upper) and
             _looks_like_percentage_value(pct1_lower) and _looks_like_percentage_value(pct2_lower) and
             str(pct1_upper).strip() == str(pct2_lower).strip()):
-            row_upper[idx_pct1_17] = pct1_lower
-            row_upper[idx_pct2_17] = pct1_upper
-            data_17[i] = row_upper
+            row_upper[idx_pct1_18] = pct1_lower
+            row_upper[idx_pct2_18] = pct1_upper
+            data_18[i] = row_upper
 
     # Kolom Persentase (1) dan (2) merge cell: jika baris atas kosong ("-"), isi dari baris bawah (nilai sama untuk kedua baris, mis. 318)
-    for i in range(len(data_17) - 1):
-        row_upper = data_17[i]
-        row_lower = data_17[i + 1]
-        no_upper = get_17(idx_no_17, row_upper)
-        no_lower = get_17(idx_no_17, row_lower)
+    for i in range(len(data_18) - 1):
+        row_upper = data_18[i]
+        row_lower = data_18[i + 1]
+        no_upper = get_18(idx_no_18, row_upper)
+        no_lower = get_18(idx_no_18, row_lower)
         if no_upper != no_lower or not no_upper or no_upper == "-":
             continue
-        pct1_u = get_17(idx_pct1_17, row_upper)
-        pct2_u = get_17(idx_pct2_17, row_upper)
-        pct1_l = get_17(idx_pct1_17, row_lower)
-        pct2_l = get_17(idx_pct2_17, row_lower)
+        pct1_u = get_18(idx_pct1_18, row_upper)
+        pct2_u = get_18(idx_pct2_18, row_upper)
+        pct1_l = get_18(idx_pct1_18, row_lower)
+        pct2_l = get_18(idx_pct2_18, row_lower)
         if (pct1_u == "-" or not pct1_u) and _looks_like_percentage_value(pct1_l):
-            row_upper[idx_pct1_17] = pct1_l
-            data_17[i] = row_upper
+            row_upper[idx_pct1_18] = pct1_l
+            data_18[i] = row_upper
         if (pct2_u == "-" or not pct2_u) and _looks_like_percentage_value(pct2_l):
-            row_upper[idx_pct2_17] = pct2_l
-            data_17[i] = row_upper
+            row_upper[idx_pct2_18] = pct2_l
+            data_18[i] = row_upper
 
-    # Baris bawah No sama: jika Jumlah Saham/Perubahan sama dengan baris atas (tertimpa merge), ambil nilai dari sel lain di baris itu (dari ekstraksi PDF)
-    for i in range(len(data_17) - 1):
-        row_upper = data_17[i]
-        row_lower = data_17[i + 1]
-        no_upper = get_17(idx_no_17, row_upper)
-        no_lower = get_17(idx_no_17, row_lower)
+    # Baris bawah (No sama): isi Jumlah Saham (1)/(2) dan Perubahan dari nilai yang ada di baris itu atau baris atas (salah kolom)
+    for i in range(len(data_18) - 1):
+        row_upper = data_18[i]
+        row_lower = data_18[i + 1]
+        no_upper = get_18(idx_no_18, row_upper)
+        no_lower = get_18(idx_no_18, row_lower)
         if no_upper != no_lower or not no_upper or no_upper == "-":
             continue
-        j1_u, j2_u = get_17(idx_jumlah1_17, row_upper), get_17(idx_jumlah2_17, row_upper)
-        j1_l, j2_l = get_17(idx_jumlah1_17, row_lower), get_17(idx_jumlah2_17, row_lower)
-        pu, pl = get_17(idx_perubahan_17, row_upper), get_17(idx_perubahan_17, row_lower)
-        if not (_looks_like_large_number(j1_u) and _looks_like_large_number(j2_u)):
+        j1_l = get_18(idx_jumlah1_18, row_lower)
+        j2_l = get_18(idx_jumlah2_18, row_lower)
+        pl = get_18(idx_perubahan_18, row_lower)
+        j1_u = get_18(idx_jumlah1_18, row_upper)
+        j2_u = get_18(idx_jumlah2_18, row_upper)
+        sg1_l = get_18(idx_saham_gab1_18, row_lower)
+        sg2_l = get_18(idx_saham_gab2_18, row_lower)
+        sg1_u = get_18(idx_saham_gab1_18, row_upper)
+        sg2_u = get_18(idx_saham_gab2_18, row_upper)
+        # Pass awal: isi Jumlah (1)/(2) baris bawah dari Saham Gabungan baris bawah.
+        # Jangan isi jika SG baris bawah sama dengan Jumlah baris atas (No 318: SG=217,622,500 = Jumlah(2) atas → biarkan untuk large_vals 2,000,000).
+        both_upper_empty = (not j1_u or j1_u == "-") and (not j2_u or j2_u == "-")
+        if (j1_l == "-" or not j1_l) and sg1_l and sg1_l != "-" and _looks_like_large_number(sg1_l):
+            if (sg1_l == j2_u or sg1_l == j1_u):
+                pass
+            elif (j1_u and j1_u != "-" and sg1_l != sg1_u) or both_upper_empty:
+                row_lower[idx_jumlah1_18] = sg1_l
+                j1_l = sg1_l
+                data_18[i + 1] = row_lower
+        if (j2_l == "-" or not j2_l) and sg2_l and sg2_l != "-" and _looks_like_large_number(sg2_l):
+            if (sg2_l == j1_u or sg2_l == j2_u):
+                pass
+            elif (j2_u and j2_u != "-" and sg2_l != sg2_u) or both_upper_empty:
+                row_lower[idx_jumlah2_18] = sg2_l
+                j2_l = sg2_l
+                data_18[i + 1] = row_lower
+        if (j1_l == "-" or not j1_l) and sg2_l and sg2_l != "-" and _looks_like_large_number(sg2_l):
+            if (sg2_l == j2_u or sg2_l == j1_u):
+                pass
+            elif (j1_u and j1_u != "-" and sg2_l != sg2_u) or both_upper_empty:
+                row_lower[idx_jumlah1_18] = sg2_l
+                j1_l = sg2_l
+                data_18[i + 1] = row_lower
+        if (j2_l == "-" or not j2_l) and sg1_l and sg1_l != "-" and _looks_like_large_number(sg1_l):
+            if (sg1_l == j1_u or sg1_l == j2_u):
+                pass
+            elif (j2_u and j2_u != "-" and sg1_l != sg1_u) or both_upper_empty:
+                row_lower[idx_jumlah2_18] = sg1_l
+                j2_l = sg1_l
+                data_18[i + 1] = row_lower
+        need_j1 = j1_l == "-" or not j1_l
+        need_j2 = j2_l == "-" or not j2_l
+        need_p = pl == "-" or not pl
+        if not (need_j1 or need_j2 or need_p):
             continue
-        changed = False
-        if j1_l == j1_u and j2_l == j2_u:
-            for c in range(TARGET_COLS_17):
-                cell = get_17(c, row_lower)
-                norm = cell.replace(",", "").replace(" ", "")
-                if norm == "2000000" or cell.strip() == "2,000,000":
-                    row_lower[idx_jumlah1_17] = "2,000,000"
-                    row_lower[idx_jumlah2_17] = "2,000,000"
-                    changed = True
-                    break
-        if pl == pu and pu != "-":
-            for c in range(TARGET_COLS_17):
-                if c == idx_perubahan_17:
+        # Kumpulkan nilai angka besar dan perubahan: dari baris bawah, lalu baris berikutnya (sama No), lalu baris atas.
+        # Penting: untuk No 318, nilai 2,000,000 bisa ada di baris ke-3 (identity + 2,000,000 2,000,000 0); baris ke-2 punya SG/Persen tapi Jumlah "-".
+        # Jadi kita ambil juga dari row i+2, i+3, ... selama No sama atau kosong (lanjutan).
+        large_vals_by_col = []
+        change_vals = []
+        rows_to_scan = [(row_lower, True)]
+        k = i + 2
+        while k < len(data_18):
+            next_row = data_18[k]
+            next_no = get_18(idx_no_18, next_row)
+            if next_no and next_no != "-" and next_no != no_upper:
+                break
+            rows_to_scan.append((next_row, True))
+            k += 1
+        rows_to_scan.append((row_upper, False))
+        for row_src, is_lower in rows_to_scan:
+            for c in range(TARGET_COLS_18):
+                if not is_lower and (c == idx_jumlah1_18 or c == idx_jumlah2_18):
                     continue
-                cell = get_17(c, row_lower)
-                if cell.strip() == "0" and _looks_like_change_value(cell):
-                    row_lower[idx_perubahan_17] = "0"
-                    changed = True
+                v = get_18(c, row_src)
+                if v == "-" or not v:
+                    continue
+                if _looks_like_large_number(v) and not _looks_like_percentage_value(v):
+                    if not is_lower and (j1_u and j1_u != "-") and v in (j1_u, j2_u):
+                        continue
+                    large_vals_by_col.append((c, v, is_lower))
+                if c != idx_perubahan_18 and _looks_like_change_value(v) and not _looks_like_large_number(v):
+                    change_vals.append(v)
+        # Urutkan: baris bawah dulu (termasuk baris lanjutan sama No), kolom 0-10 dulu, lalu 11-17
+        large_vals_by_col.sort(key=lambda x: (0 if x[2] else 1, 0 if x[0] <= 10 else 1, x[0]))
+        large_vals = [v for _, v, _ in large_vals_by_col]
+        sg1_u = get_18(idx_saham_gab1_18, row_upper)
+        sg2_u = get_18(idx_saham_gab2_18, row_upper)
+        # Kandidat Jumlah Saham: beda dari baris atas; untuk (2) saja boleh sama dengan j2_u (247 bawah isi dari nilai yang ada)
+        def _ok_candidate_j1(v):
+            return v not in (j1_u, j2_u, sg1_u, sg2_u)
+        def _ok_candidate_j2(v):
+            if v in (j1_u, sg1_u, sg2_u):
+                return False
+            if v == j2_u:
+                return True
+            return True
+        # 247 bawah: jika baris atas Jumlah Saham (1) = "-", baris bawah (1) harus "-"
+        if j1_u == "-":
+            row_lower[idx_jumlah1_18] = "-"
+            data_18[i + 1] = row_lower
+            need_j1 = False
+        if need_j1 or need_j2:
+            candidate = None
+            # Jika kita masih butuh J1, pilih kandidat J1 dulu
+            if need_j1:
+                for v in large_vals:
+                    if _ok_candidate_j1(v):
+                        candidate = v
+                        break
+            # Untuk J2 (termasuk kasus hanya butuh J2, seperti 247 bawah), pilih kandidat J2 langsung jika belum ada
+            if need_j2 and candidate is None:
+                for v in large_vals:
+                    if _ok_candidate_j2(v):
+                        candidate = v
+                        break
+            if candidate is not None:
+                if need_j1:
+                    row_lower[idx_jumlah1_18] = candidate
+                if need_j2:
+                    # Jika J1 juga diisi dengan candidate, dan tersedia nilai besar lain yang cocok untuk J2, pakai nilai lain itu.
+                    # Jika hanya J2 yang dibutuhkan (J1 tidak diisi, mis. 247), langsung pakai candidate untuk J2.
+                    if need_j1 and len(large_vals) >= 2:
+                        other = next((x for x in large_vals if x != candidate and _ok_candidate_j2(x)), candidate)
+                        row_lower[idx_jumlah2_18] = other
+                    else:
+                        row_lower[idx_jumlah2_18] = candidate
+                data_18[i + 1] = row_lower
+        # Fallback Jumlah Saham (2) dari baris atas: hanya jika baris atas J1 terisi (bukan kasus 247).
+        # Untuk 247 (baris atas J1="-") J2 bawah jangan diisi dari j2_u/sg2_u agar tidak duplikat Saham Gabungan (2).
+        if need_j2 and (get_18(idx_jumlah2_18, row_lower) == "-" or not get_18(idx_jumlah2_18, row_lower)):
+            if (j1_u and j1_u != "-") and j2_u and j2_u != "-" and _looks_like_large_number(j2_u):
+                row_lower[idx_jumlah2_18] = j2_u
+                data_18[i + 1] = row_lower
+            elif (j1_u and j1_u != "-") and sg2_u and sg2_u != "-" and _looks_like_large_number(sg2_u):
+                row_lower[idx_jumlah2_18] = sg2_u
+                data_18[i + 1] = row_lower
+        # Perubahan: isi dari angka yang bukan No baris; jika tidak ada kandidat valid, isi "0" (mis. 318 bawah)
+        # Jika baris atas Perubahan "-", jangan isi baris bawah dengan "0" — biarkan "-" (mis. 247)
+        if need_p:
+            filled = False
+            no_lower_str = str(no_lower).strip() if no_lower not in (None, "") else ""
+            for v in change_vals:
+                vstrip = v.strip()
+                if no_lower_str and vstrip == no_lower_str:
+                    continue
+                if len(vstrip) <= 4 and vstrip.isdigit():
+                    row_lower[idx_perubahan_18] = vstrip
+                    data_18[i + 1] = row_lower
+                    filled = True
                     break
-        if changed:
-            data_17[i + 1] = row_lower
+            pl_upper = get_18(idx_perubahan_18, row_upper)
+            upper_perubahan_empty = not pl_upper or pl_upper.strip() == "-"
+            if not filled and (get_18(idx_perubahan_18, row_lower) == "-" or not get_18(idx_perubahan_18, row_lower)):
+                if not upper_perubahan_empty:
+                    row_lower[idx_perubahan_18] = "0"
+                    data_18[i + 1] = row_lower
+        # Koreksi: baris bawah (No sama) yang Perubahan-nya satu huruf (mis. "D" dari kolom Domestik) → "0"
+        pl_now = get_18(idx_perubahan_18, row_lower)
+        if pl_now and len(pl_now.strip()) == 1 and pl_now.strip().isalpha():
+            row_lower[idx_perubahan_18] = "0"
+            data_18[i + 1] = row_lower
+
+    # Pass akhir: isi Jumlah Saham (1)/(2) baris bawah dari baris mana pun dalam grup No yang sama.
+    # Menangani kasus 318 ketika nilai 2,000,000 ada di baris ke-3 atau di kolom yang salah di baris ke-2.
+    idx_no_18 = 0
+    no_to_indices = {}
+    for idx, row in enumerate(data_18):
+        no = get_18(idx_no_18, row)
+        if no and no != "-":
+            no_to_indices.setdefault(no, []).append(idx)
+        elif idx > 0:
+            prev_no = get_18(idx_no_18, data_18[idx - 1])
+            if prev_no and prev_no != "-":
+                no_to_indices.setdefault(prev_no, []).append(idx)
+    for no, indices in no_to_indices.items():
+        if len(indices) < 2:
+            continue
+        first_idx = indices[0]
+        first_row = data_18[first_idx]
+        j1_first = get_18(idx_jumlah1_18, first_row)
+        j2_first = get_18(idx_jumlah2_18, first_row)
+        sg1_first = get_18(idx_saham_gab1_18, first_row)
+        sg2_first = get_18(idx_saham_gab2_18, first_row)
+        for idx in indices[1:]:
+            row = data_18[idx]
+            j1 = get_18(idx_jumlah1_18, row)
+            j2 = get_18(idx_jumlah2_18, row)
+            # Baris bawah yang duplikat (nilai sama dengan baris atas) juga harus dikoreksi ke nilai sendiri (318: 2,000,000)
+            is_duplicate_of_first = (j1 == j1_first and j2 == j2_first) and (j1_first != "-" or j2_first != "-")
+            need_fill_j1 = (j1 == "-" or not j1) or is_duplicate_of_first
+            need_fill_j2 = (j2 == "-" or not j2) or is_duplicate_of_first
+            if not need_fill_j1 and not need_fill_j2:
+                continue
+            large_in_group = []
+            for i in indices:
+                r = data_18[i]
+                for c in range(TARGET_COLS_18):
+                    v = get_18(c, r)
+                    if v == "-" or not v:
+                        continue
+                    if _looks_like_large_number(v) and not _looks_like_percentage_value(v):
+                        large_in_group.append(v)
+            large_in_group = list(dict.fromkeys(large_in_group))
+            candidate_j1 = next((v for v in large_in_group if v not in (j1_first, j2_first)), None)
+            if candidate_j1 and need_fill_j1:
+                row[idx_jumlah1_18] = candidate_j1
+                data_18[idx] = row
+                j1 = candidate_j1
+            if need_fill_j2:
+                if j1_first == "-" and j2_first and j2_first in large_in_group and not is_duplicate_of_first:
+                    candidate_j2 = j2_first
+                else:
+                    candidate_j2 = next((v for v in large_in_group if v not in (j1_first, j2_first, sg1_first, sg2_first)), None)
+                if candidate_j2 is None and candidate_j1:
+                    candidate_j2 = candidate_j1
+                if candidate_j2:
+                    row[idx_jumlah2_18] = candidate_j2
+                    data_18[idx] = row
 
     return {
         "header_top": header_top,
-        "header_row": header_17,
-        "data": data_17,
+        "header_row": header_18,
+        "data": data_18,
+        "raw_data": raw_data_for_debug,
     }
 
 
@@ -2218,6 +2447,37 @@ OUTPUT_STYLES = {
 
 # Spasi seperti Shift+Enter (baris menempel): tinggi baris = size * multiplier
 TIGHT_LINE_MULT = 1.05  # sangat ketat, baris nyaris rapat
+
+
+def create_pdf_raw_blue_one_per_line(lines: list[str], output_path: str) -> None:
+    """Buat PDF berisi teks biru mentah: satu kata/baris, untuk debugging."""
+    if not lines:
+        return
+    doc = fitz.open()
+    blue_pdf = (0, 0, 1)
+    margin = 50
+    y = margin
+    page_width = 595
+    page_height = 842
+    fontsize = 10
+    line_step = fontsize * 1.4
+    page = doc.new_page(width=page_width, height=page_height)
+    for line in lines:
+        line_safe = (line or "").strip()
+        if not line_safe:
+            continue
+        line_safe = "".join(c if ord(c) < 256 else "?" for c in line_safe)
+        pt = fitz.Point(margin, y + fontsize * 0.9)
+        try:
+            page.insert_text(pt, line_safe, fontsize=fontsize, color=blue_pdf, fontname="helv")
+        except Exception:
+            page.insert_text(pt, line_safe, fontsize=fontsize, color=blue_pdf)
+        y += line_step
+        if y > page_height - margin - line_step:
+            page = doc.new_page(width=page_width, height=page_height)
+            y = margin
+    doc.save(output_path, garbage=1, deflate=False)
+    doc.close()
 
 
 def create_pdf_with_blue_text(
@@ -2360,6 +2620,310 @@ def create_pdf_from_table(table: list[list[str]], output_path: str) -> None:
     doc.close()
 
 
+def _column_index_by_header(header_row: list, name_keywords: tuple) -> int:
+    """Cari indeks kolom yang judulnya mengandung salah satu keyword (case-insensitive). Return -1 jika tidak ketemu."""
+    for idx, h in enumerate(header_row):
+        if not h:
+            continue
+        h_lower = str(h).strip().lower()
+        for kw in name_keywords:
+            if kw.lower() in h_lower:
+                return idx
+    return -1
+
+
+def _apply_raw_blue_fix_same_no_baris_bawah(
+    data_rows: list,
+    raw_blue_lines: list,
+    header_row: list | None = None,
+    debug_ref: dict | None = None,
+) -> None:
+    """
+    Isi Jumlah Saham (1)/(2) dan Perubahan baris bawah HANYA dari urutan raw teks biru (bukan dari Saham Gabungan).
+    Berlaku untuk SEMUA No yang punya lebih dari satu baris (tidak hardcode nomor tertentu).
+    Untuk setiap No demikian: cari di raw_blue_lines di segmen setelah kemunculan No tersebut
+    sebuah triple (angka_besar, angka_besar, perubahan) yang berbeda dari baris pertama,
+    lalu isi baris kedua dengan triple itu (prioritas triple dengan Perubahan=0). SG (1)/(2) baris bawah = merge cell (sama dengan baris atas).
+    Jika debug_ref diberikan, isi debug_ref["707"] saat No 707 diproses (untuk logging frontend).
+    """
+    if not data_rows or not raw_blue_lines or len(data_rows) < 2:
+        return
+    ncols = max(len(r) for r in data_rows)
+    if ncols < 12:
+        return
+
+    # Indeks kolom: pakai nama header jika ada, fallback ke posisi tetap (sesuai TEMPLATE_HEADER_18)
+    if header_row and len(header_row) >= ncols:
+        idx_no = _column_index_by_header(header_row, ("no", "no."))
+        idx_j1 = _column_index_by_header(header_row, ("jumlah saham (1)", "jumlah saham(1)"))
+        idx_j2 = _column_index_by_header(header_row, ("jumlah saham (2)", "jumlah saham(2)"))
+        idx_perubahan = _column_index_by_header(header_row, ("perubahan",))
+        idx_saham_gab1 = _column_index_by_header(header_row, ("saham gabungan per investor (1)", "saham gabungan (1)"))
+        idx_saham_gab2 = _column_index_by_header(header_row, ("saham gabungan per investor (2)", "saham gabungan (2)"))
+        if idx_no < 0:
+            idx_no = 0
+        if idx_j1 < 0:
+            idx_j1 = 11
+        if idx_j2 < 0:
+            idx_j2 = 14
+        if idx_perubahan < 0:
+            idx_perubahan = 17
+        if idx_saham_gab1 < 0:
+            idx_saham_gab1 = 12
+        if idx_saham_gab2 < 0:
+            idx_saham_gab2 = 15
+    else:
+        idx_no, idx_j1, idx_j2, idx_perubahan = 0, 11, 14, 17
+        idx_saham_gab1, idx_saham_gab2 = 12, 15
+
+    if ncols <= max(idx_j1, idx_j2, idx_perubahan):
+        return
+    lines = [str(s).strip() for s in raw_blue_lines]
+
+    # Normalisasi baris dan kelompokkan per No
+    no_to_indices = {}
+    for row_idx, row in enumerate(data_rows):
+        row = list(row)
+        while len(row) < ncols:
+            row.append("-")
+        data_rows[row_idx] = row
+        no = (row[idx_no] or "").strip()
+        if no and no != "-":
+            no_to_indices.setdefault(no, []).append(row_idx)
+        elif row_idx > 0:
+            prev_no = (data_rows[row_idx - 1][idx_no] or "").strip()
+            if prev_no and prev_no != "-":
+                no_to_indices.setdefault(prev_no, []).append(row_idx)
+
+    # Proses setiap No yang punya 2+ baris (generik; tidak hardcode 318 atau nomor lain)
+    for no, indices in no_to_indices.items():
+        if len(indices) < 2:
+            continue
+        first_idx, second_idx = indices[0], indices[1]
+        first_row = data_rows[first_idx]
+        j1_first = (first_row[idx_j1] or "").strip() or "-"
+        j2_first = (first_row[idx_j2] or "").strip() or "-"
+
+        # Posisi pertama kemunculan No ini di raw
+        pos_no = None
+        for i, w in enumerate(lines):
+            if (w or "").strip() == no:
+                pos_no = i
+                break
+        if pos_no is None:
+            if debug_ref is not None and no == "707":
+                debug_ref["707"] = {"path": "pos_no is None", "no_in_raw": no in lines, "sample": lines[:20]}
+            continue
+
+        # Batas: sampai kemunculan No lain (nomor urut berikutnya) atau akhir list
+        segment_end = len(lines)
+        next_no_str = None
+        for j in range(pos_no + 1, len(lines)):
+            w = (lines[j] or "").strip()
+            if _looks_like_no(w) and w != no:
+                segment_end = j
+                next_no_str = w
+                break
+
+        # Cari triple (angka_besar, angka_besar, perubahan) di segmen yang berbeda dari baris pertama.
+        # Untuk baris bawah (mis. 318 bawah): pilih triple dengan Perubahan=0 jika ada, else triple terakhir.
+        # Rentang: i sampai i+2 harus dalam segment; sertakan sampai ujung segmen.
+        seg_end = min(segment_end, len(lines))
+        i_end = min(seg_end - 1, len(lines) - 2) if len(lines) >= 2 else pos_no + 1
+        candidates = []
+        for i in range(pos_no + 1, i_end):
+            v1, v2, v3 = (lines[i] or "").strip(), (lines[i + 1] or "").strip(), (lines[i + 2] or "").strip()
+            ok1 = _looks_like_large_number(v1) and not _looks_like_percentage_value(v1)
+            ok2 = _looks_like_large_number(v2) and not _looks_like_percentage_value(v2)
+            ok3 = _looks_like_change_value(v3)
+            if not ok1 or not ok2 or not ok3:
+                continue
+            if (v1, v2) != (j1_first, j2_first):
+                candidates.append((i, v3))
+        triple_start = None
+        for i, pv in candidates:
+            if (pv or "").strip() == "0":
+                triple_start = i
+                break
+        if triple_start is None and candidates:
+            triple_start = candidates[-1][0]
+        if triple_start is None:
+            # Fallback: baris bawah hanya punya satu nilai (mis. 487 di Jumlah Saham (2)), baris atas Perubahan = -nilai
+            # Hanya nilai 3+ digit (100-9999) agar tidak ambil "2", "19" dari alamat (Lantai 2, Ruang 210, dll.)
+            def _collect_change_like(start: int, end: int):
+                out_list = []
+                for i in range(start, end):
+                    w = (lines[i] or "").strip()
+                    if not w or w == "-":
+                        continue
+                    w_normalized = w.replace(",", "").replace(" ", "").replace(".", "", 1)
+                    if not w_normalized.isdigit():
+                        continue
+                    try:
+                        v = int(w_normalized)
+                    except ValueError:
+                        continue
+                    if _looks_like_large_number(w) or _looks_like_percentage_value(w):
+                        continue
+                    # Minimal 3 digit (100-9999) untuk Perubahan/J2 yang wajar; hindari 0, 2, 19 dari teks
+                    if 100 <= v <= 9999:
+                        out_list.append((i, str(v)))
+                return out_list
+
+            change_like_in_segment = _collect_change_like(pos_no + 1, seg_end)
+            if not change_like_in_segment:
+                seg_end_ext = min(seg_end + 80, len(lines))
+                change_like_in_segment = _collect_change_like(pos_no + 1, seg_end_ext)
+            # Filter generik: buang nilai yang sama dengan No baris berikutnya (dari raw)
+            def _norm_num(s):
+                try:
+                    return str(int((s or "").replace(",", "").replace(" ", "")))
+                except (ValueError, TypeError):
+                    return (s or "").strip()
+            if next_no_str is not None:
+                next_norm = _norm_num(next_no_str)
+                change_like_in_segment = [(i, v) for i, v in change_like_in_segment if _norm_num(v) != next_norm]
+            # Jika 3+ nilai: ujung sering noise (alamat di awal, No berikutnya di akhir); ambil yang di tengah
+            if len(change_like_in_segment) >= 3:
+                change_like_in_segment = change_like_in_segment[1:-1]
+            # Jika 2 nilai: biasanya [noise, nilai asli]; pakai nilai terakhir untuk keduanya
+            if len(change_like_in_segment) == 2:
+                change_like_in_segment = [change_like_in_segment[-1]]
+            apply_fallback = False
+            if change_like_in_segment:
+                row2_check = data_rows[second_idx]
+                j2_current = (row2_check[idx_j2] or "").strip() or "-"
+                # Jangan pakai fallback jika baris bawah J2 sudah angka besar (mis. 247: 8,417,464,300); biarkan Perubahan atas "-" dan J2 bawah tetap
+                if not _looks_like_large_number(j2_current):
+                    apply_fallback = True
+                    _, val_first = change_like_in_segment[0]
+                    val_last = change_like_in_segment[-1][1] if change_like_in_segment else val_first
+                    if len(change_like_in_segment) == 1:
+                        val_last = val_first
+                    cur_perubahan = (first_row[idx_perubahan] or "").strip() or "-"
+                    if cur_perubahan == "-" or not cur_perubahan:
+                        first_row[idx_perubahan] = "-" + val_first if val_first.lstrip("-") == val_first else val_first
+                    row2 = list(data_rows[second_idx])
+                    while len(row2) < ncols:
+                        row2.append("-")
+                    row2[idx_j1] = "-"
+                    row2[idx_j2] = val_last
+                    row2[idx_perubahan] = (row2[idx_perubahan] or "").strip() or "-"
+                    if idx_saham_gab1 < ncols:
+                        row2[idx_saham_gab1] = (first_row[idx_saham_gab1] or "").strip() or "-"
+                    if idx_saham_gab2 < ncols:
+                        row2[idx_saham_gab2] = (first_row[idx_saham_gab2] or "").strip() or "-"
+                    data_rows[second_idx] = row2
+                else:
+                    # Baris bawah J2 sudah angka besar: kosongkan J1 hanya jika J1 = J2 (duplikat salah tempat, mis. 247)
+                    # Jika J2 baris bawah = J2/SG(2) baris atas (duplikat), cari di raw angka besar lain untuk J2 bawah (mis. 247: 8,417,464,300)
+                    row2 = list(data_rows[second_idx])
+                    while len(row2) < ncols:
+                        row2.append("-")
+                    j1_current = (row2[idx_j1] or "").strip() or "-"
+                    j2_val = (row2[idx_j2] or "").strip() or "-"
+                    sg2_first = (first_row[idx_saham_gab2] or "").strip() or "-" if idx_saham_gab2 < len(first_row) else "-"
+
+                    def _norm(s):
+                        return (s or "").replace(",", "").replace(" ", "")
+
+                    j2_val_norm = _norm(j2_val)
+                    j2_first_norm = _norm(j2_first)
+                    sg2_first_norm = _norm(sg2_first)
+                    # Apakah J2 bawah saat ini sama dengan nilai baris atas (salah tempat)?
+                    j2_equals_upper = j2_val_norm and (j2_val_norm == j2_first_norm or j2_val_norm == sg2_first_norm)
+
+                    if j2_equals_upper:
+                        # Cari angka besar lain untuk J2 bawah: dalam segmen, atau sedikit setelah segmen hanya jika orde sama dengan SG(2)
+                        # (e.g. 8,417,464,300) agar tidak ambil 2,000,000 dari No berikutnya
+                        large_in_segment = []
+                        seg_end_ext = min(seg_end + 40, len(lines))
+                        for ii in range(pos_no + 1, seg_end_ext):
+                            w = (lines[ii] or "").strip()
+                            if not w or not _looks_like_large_number(w) or _looks_like_percentage_value(w):
+                                continue
+                            w_norm = _norm(w)
+                            if w_norm in (j2_first_norm, sg2_first_norm, _norm(j1_first)):
+                                continue
+                            # Di luar segmen (ii >= seg_end): hanya terima nilai yang orde sama dengan SG(2) (e.g. 8,417,xxx)
+                            if ii >= seg_end and sg2_first_norm and len(sg2_first_norm) >= 4 and len(w_norm) >= 4:
+                                if w_norm[:4] != sg2_first_norm[:4]:
+                                    continue
+                            large_in_segment.append((ii, w))
+                        # Ambil nilai besar terakhir yang lolos filter (nilai baris bawah di PDF, e.g. 8,417,464,300)
+                        if large_in_segment:
+                            _, replace_j2 = large_in_segment[-1]
+                            row2[idx_j2] = replace_j2
+                            data_rows[second_idx] = row2
+
+                    j1_eq_j2 = (j1_current == j2_val) or (
+                        j1_current and j2_val
+                        and _looks_like_large_number(j1_current)
+                        and _looks_like_large_number(j2_val)
+                        and (j1_current.replace(",", "").replace(" ", "") == j2_val.replace(",", "").replace(" ", ""))
+                    )
+                    if j1_current != "-" and j1_eq_j2:
+                        row2[idx_j1] = "-"
+                        data_rows[second_idx] = row2
+            if debug_ref is not None and no == "707":
+                segment_preview = lines[pos_no : seg_end]
+                j2_after = (data_rows[second_idx][idx_j2] or "").strip() or "-" if second_idx < len(data_rows) else "-"
+                debug_ref["707"] = {
+                    "path": "fallback (no triple)",
+                    "pos_no": pos_no,
+                    "segment_end": segment_end,
+                    "seg_end": seg_end,
+                    "j1_first": j1_first,
+                    "j2_first": j2_first,
+                    "segment_preview": segment_preview[:80],
+                    "change_like_in_segment": change_like_in_segment,
+                    "fallback_applied": apply_fallback,
+                    "first_row_perubahan_after": (first_row[idx_perubahan] or "").strip() or "-",
+                    "second_row_j2_after": j2_after,
+                }
+            continue
+
+        j1_val = lines[triple_start]
+        j2_val = lines[triple_start + 1]
+        p_val = lines[triple_start + 2]
+        row = list(data_rows[second_idx])
+        while len(row) < ncols:
+            row.append("-")
+        second_row_before = list(row)
+        # Kasus 707: triple (large, large, small) tapi baris bawah harus J1="-", J2=nilai kecil (487), Perubahan=0
+        p_val_small = (
+            _looks_like_change_value(p_val)
+            and not _looks_like_large_number(p_val)
+            and (p_val or "").strip() not in ("", "-", "0")
+        )
+        j1_empty = ((row[idx_j1] or "").strip() or "-") == "-"
+        j2_empty = ((row[idx_j2] or "").strip() or "-") == "-"
+        if p_val_small and j1_empty and j2_empty:
+            cur_perubahan = (first_row[idx_perubahan] or "").strip() or "-"
+            if cur_perubahan == "-" or not cur_perubahan:
+                first_row[idx_perubahan] = "-" + p_val if (p_val or "").lstrip("-") == (p_val or "") else p_val
+            row[idx_j1] = "-"
+            row[idx_j2] = (p_val or "").strip()
+            row[idx_perubahan] = "0"
+        else:
+            row[idx_j1] = j1_val
+            row[idx_j2] = j2_val
+            row[idx_perubahan] = p_val
+        # Saham Gabungan (1)/(2) baris bawah = merge cell: sama dengan baris atas
+        if idx_saham_gab1 < ncols:
+            row[idx_saham_gab1] = (first_row[idx_saham_gab1] or "").strip() or "-"
+        if idx_saham_gab2 < ncols:
+            row[idx_saham_gab2] = (first_row[idx_saham_gab2] or "").strip() or "-"
+        data_rows[second_idx] = row
+
+        if debug_ref is not None and no == "707":
+            debug_ref["707"] = {
+                "path": "triple",
+                "triple": (j1_val, j2_val, p_val),
+                "second_row_after": list(row)[: max(idx_j1, idx_j2, idx_perubahan) + 1],
+            }
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -2387,9 +2951,22 @@ def extract_blue():
                 "error": "Tidak ada teks warna biru ditemukan di PDF ini.",
                 "hint": "Pastikan teks benar-benar menggunakan warna biru (bukan hitam/abu-abu)."
             }), 422
+        # Raw teks biru: ambil semua span biru, satu kata satu baris (untuk debugging)
+        raw_blue_lines = []
+        try:
+            blue_spans = extract_blue_spans_with_bbox(tmp_in_path)
+            for item in blue_spans:
+                text = (item.get("text") or "").strip()
+                for word in text.split():
+                    if word:
+                        raw_blue_lines.append(word)
+        except Exception:
+            raw_blue_lines = []
         if isinstance(result, dict):
-            header_row = result["header_row"] or list(TEMPLATE_HEADER_18)
             data_rows = result["data"] or []
+            header_row = result.get("header_row") or list(TEMPLATE_HEADER_18)
+            debug_318_ref = {}
+            _apply_raw_blue_fix_same_no_baris_bawah(data_rows, raw_blue_lines, header_row, debug_ref=debug_318_ref)
             target_cols = len(header_row)
             # Pastikan header dan setiap baris data punya kolom sesuai header
             header_row = (list(header_row) + [""] * target_cols)[:target_cols]
@@ -2399,7 +2976,15 @@ def extract_blue():
                 while len(r) < target_cols:
                     r.append("-")
                 table.append(r[:target_cols])
-            return jsonify({"table": table, "header_top": result.get("header_top") or []})
+            out = {
+                "table": table,
+                "header_top": result.get("header_top") or [],
+                "raw_data": result.get("raw_data") or [],
+                "raw_blue_lines": raw_blue_lines,
+            }
+            if debug_318_ref.get("707") is not None:
+                out["debug_707"] = debug_318_ref["707"]
+            return jsonify(out)
         return jsonify({"table": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2409,6 +2994,34 @@ def extract_blue():
                 os.unlink(tmp_in_path)
             except Exception:
                 pass
+
+
+@app.route("/api/download-raw-blue-pdf", methods=["POST"])
+def download_raw_blue_pdf():
+    """Terima JSON { lines: ["kata1", "kata2", ...] } (raw teks biru, satu kata per baris), kembalikan PDF."""
+    try:
+        data = request.get_json() or {}
+        lines = data.get("lines")
+        if not lines or not isinstance(lines, list):
+            return jsonify({"error": "Data lines tidak valid"}), 400
+        lines = [str(x).strip() for x in lines if str(x).strip()]
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_out:
+            tmp_path = tmp_out.name
+        create_pdf_raw_blue_one_per_line(lines, tmp_path)
+        with open(tmp_path, "rb") as f:
+            pdf_bytes = f.read()
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        return send_file(
+            BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name="raw_teks_biru_satu_baris.pdf",
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/download-pdf", methods=["POST"])
