@@ -1153,6 +1153,29 @@ def _merge_continuation_rows(rows: list[list], num_cols: int) -> list[list]:
             no_next = (next_row[0] or "").strip()
             if no_next and no_next != "-" and _looks_like_no(no_next):
                 break
+            # Jangan merge hanya jika baris lanjutan punya data numerik BEDA dari baris saat ini (baris data baru, mis. 497).
+            # Jika numerik sama atau baris lanjutan hanya isi kosong → merge (lanjutan/duplikat, mis. 247/318 baris ke-3).
+            idx_numeric_start = 11
+            idx_numeric_end = min(18, num_cols)
+            next_has_different_numeric = False
+            for j in range(idx_numeric_start, idx_numeric_end):
+                if j >= len(next_row):
+                    break
+                nv = str(next_row[j] or "").strip()
+                rv = str(row[j] or "").strip()
+                if not nv or nv == "-":
+                    continue
+                if not (
+                    _looks_like_large_number(nv)
+                    or _looks_like_percentage_value(nv)
+                    or _looks_like_change_value(nv)
+                ):
+                    continue
+                if rv and rv != "-" and nv != rv:
+                    next_has_different_numeric = True
+                    break
+            if next_has_different_numeric:
+                break
             empty_idx = [j for j in range(num_cols) if not (row[j] and str(row[j]).strip() and str(row[j]).strip() != "-")]
             values = [str(next_row[j]).strip() for j in range(num_cols) if next_row[j] and str(next_row[j]).strip() != "-"]
             if not values:

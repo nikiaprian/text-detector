@@ -323,6 +323,11 @@
     .tabel-hasil tbody tr {
       transition: background-color 0.15s ease, transform 0.1s ease;
     }
+    /* Kolom merge: rata tengah kiri-kanan dan atas-bawah */
+    .tabel-hasil td.cell-merge {
+      text-align: center;
+      vertical-align: middle;
+    }
     .tabel-hasil tbody tr:nth-child(even) {
       background: #fafbfd;
     }
@@ -504,18 +509,124 @@
       }
       thead.appendChild(trHead);
       tabelHasil.appendChild(thead);
-      const tbody = document.createElement("tbody");
+      // Kolom yang di-merge untuk entri multi-baris (No, Nama Emiten, Nama Pemegang Saham, Saham Gabungan, Persentase)
+      const mergeKeywords = [
+        "No",
+        "Nama Emiten",
+        "Nama Pemegang Saham",
+        "Saham Gabungan Per Investor (1)",
+        "Saham Gabungan Per Investor (2)",
+        "Persentase Kepemilikan Per Investor"
+      ];
+      const mergeCols = [];
+      for (let c = 0; c < numCols; c++) {
+        const h = (headerPadded[c] || "").trim();
+        if (mergeKeywords.some(function (kw) { return h === kw || h.indexOf(kw) >= 0; })) {
+          mergeCols.push(c);
+        }
+      }
+
+      // Deteksi grup baris: No sama atau baris lanjutan (No "-") dengan Kode Efek sama = satu grup
+      const dataRows = [];
       for (let i = 1; i < table.length; i++) {
+        dataRows.push(table[i] || []);
+      }
+      const groupInfo = [];
+      let groupStart = 0;
+      const isNumericNo = function (s) {
+        const t = (s || "").toString().trim();
+        return /^\d+$/.test(t);
+      };
+      let lastNumericNo = null;
+      let lastKode = "";
+      for (let r = 0; r < dataRows.length; r++) {
+        const row = dataRows[r];
+        const no = (row[0] || "").toString().trim();
+        const kode = (row[1] || "").toString().trim();
+        const prevNo = r > 0 ? (dataRows[r - 1][0] || "").toString().trim() : "";
+        const prevKode = r > 0 ? (dataRows[r - 1][1] || "").toString().trim() : "";
+        let isBreak = false;
+        if (r > 0) {
+          if (isNumericNo(no) && lastNumericNo !== null && no !== lastNumericNo) {
+            if (!(prevNo === "-" && kode && kode === prevKode)) {
+              isBreak = true;
+            }
+          } else if (no === "-" && kode && prevKode && kode !== prevKode) {
+            isBreak = true;
+          }
+        }
+        if (isNumericNo(no)) lastNumericNo = no;
+        if (kode) lastKode = kode;
+        if (isBreak) {
+          groupInfo.push({ size: r - groupStart, firstRowIdx: groupStart });
+          groupStart = r;
+        }
+      }
+      if (dataRows.length > 0) {
+        groupInfo.push({ size: dataRows.length - groupStart, firstRowIdx: groupStart });
+      }
+
+      const rowToGroup = [];
+      for (let g = 0; g < groupInfo.length; g++) {
+        const info = groupInfo[g];
+        for (let k = 0; k < info.size; k++) {
+          rowToGroup[info.firstRowIdx + k] = info;
+        }
+      }
+
+      const tbody = document.createElement("tbody");
+      const rowSpanRemaining = {};
+      for (let c = 0; c < numCols; c++) rowSpanRemaining[c] = 0;
+
+      for (let i = 0; i < dataRows.length; i++) {
         const tr = document.createElement("tr");
-        const row = table[i] || [];
+        const row = dataRows[i];
         const rowPadded = row.slice(0, numCols);
         while (rowPadded.length < numCols) rowPadded.push("-");
+        const info = rowToGroup[i] || { size: 1, firstRowIdx: i };
+
         for (let c = 0; c < numCols; c++) {
+          if (rowSpanRemaining[c] > 0) {
+            rowSpanRemaining[c]--;
+            continue;
+          }
           const td = document.createElement("td");
           td.setAttribute("data-col", String(c));
           const visible = colVisibility[c] !== false;
           td.classList.add(visible ? "col-visibility-visible" : "col-visibility-hidden");
-          td.textContent = rowPadded[c] !== undefined && rowPadded[c] !== "" ? rowPadded[c] : "-";
+
+          const isMergeCol = mergeCols.indexOf(c) >= 0;
+          const isFirstInGroup = (info.firstRowIdx === i);
+          const shouldMerge = isMergeCol && isFirstInGroup && info.size > 1;
+
+          if (shouldMerge) {
+            td.classList.add("cell-merge");
+            td.setAttribute("rowspan", String(info.size));
+            rowSpanRemaining[c] = info.size - 1;
+            // Ambil nilai terbaik dari grup: No prefer numerik, Nama Emiten prefer yang lengkap (Tbk/PT)
+            let val = rowPadded[c];
+            const vals = [];
+            for (let k = 0; k < info.size; k++) {
+              const rk = dataRows[info.firstRowIdx + k] || [];
+              const v = (rk[c] || "").toString().trim();
+              if (v && v !== "-") vals.push(v);
+            }
+            if (vals.length > 0) {
+              if (c === 0) {
+                val = vals.find(function (v) { return /^\d+$/.test(v); }) || vals[0];
+              } else if (c === 2) {
+                const withTbk = vals.filter(function (v) { return v.indexOf("Tbk") >= 0 || v.indexOf("PT") >= 0; });
+                val = withTbk.length > 0
+                  ? withTbk.reduce(function (a, b) { return a.length >= b.length ? a : b; })
+                  : vals[0];
+              } else {
+                val = vals[0];
+              }
+            }
+            td.textContent = (val !== undefined && val !== "" && val !== "-") ? val : "-";
+          } else {
+            td.textContent = rowPadded[c] !== undefined && rowPadded[c] !== "" ? rowPadded[c] : "-";
+          }
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
