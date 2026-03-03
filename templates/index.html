@@ -283,11 +283,14 @@
     .tabel-hasil td {
       border: 1px solid #e0e0e0;
       padding: 0.75rem 1rem;
-      text-align: left;
       word-wrap: break-word;
-      vertical-align: top;
+      vertical-align: middle;
       transition: background-color 0.15s ease;
     }
+    /* Perataan per jenis kolom: tengah (No, Status), kiri (teks), kanan (angka) */
+    .tabel-hasil .col-align-center { text-align: center; }
+    .tabel-hasil .col-align-left { text-align: left; }
+    .tabel-hasil .col-align-right { text-align: right; }
     .tabel-hasil th {
       background: linear-gradient(180deg, #f5f9ff 0%, #e3f2fd 100%);
       font-weight: 600;
@@ -299,8 +302,6 @@
       text-transform: uppercase;
       font-size: 0.8rem;
       letter-spacing: 0.5px;
-      text-align: center;
-      vertical-align: middle;
     }
     .tabel-hasil th:first-child {
       border-left: none;
@@ -323,9 +324,8 @@
     .tabel-hasil tbody tr {
       transition: background-color 0.15s ease, transform 0.1s ease;
     }
-    /* Kolom merge: rata tengah kiri-kanan dan atas-bawah */
+    /* Kolom merge: tetap ikut perataan kolom (col-align-*), vertikal tengah */
     .tabel-hasil td.cell-merge {
-      text-align: center;
       vertical-align: middle;
     }
     .tabel-hasil tbody tr:nth-child(even) {
@@ -487,6 +487,21 @@
         }
       }
 
+      // Perataan kolom: tengah (No, Status), kiri (teks), kanan (angka)
+      const colAlign = [];
+      const centerKeywords = ["No", "Status"];
+      const rightKeywords = ["Jumlah Saham", "Saham Gabungan Per Investor", "Persentase Kepemilikan Per Investor", "Perubahan"];
+      for (let c = 0; c < numCols; c++) {
+        const h = (headerPadded[c] || "").trim();
+        if (centerKeywords.some(function (kw) { return h === kw || h.indexOf(kw) >= 0; })) {
+          colAlign[c] = "center";
+        } else if (rightKeywords.some(function (kw) { return h.indexOf(kw) >= 0; })) {
+          colAlign[c] = "right";
+        } else {
+          colAlign[c] = "left";
+        }
+      }
+
       const thead = document.createElement("thead");
       if (headerTop && headerTop.length > 0) {
         const trTop = document.createElement("tr");
@@ -504,6 +519,7 @@
         th.setAttribute("data-col", String(c));
         const visible = colVisibility[c] !== false;
         th.classList.add(visible ? "col-visibility-visible" : "col-visibility-hidden");
+        th.classList.add("col-align-" + (colAlign[c] || "left"));
         th.textContent = headerPadded[c] || ("Kolom " + (c + 1));
         trHead.appendChild(th);
       }
@@ -594,6 +610,7 @@
           td.setAttribute("data-col", String(c));
           const visible = colVisibility[c] !== false;
           td.classList.add(visible ? "col-visibility-visible" : "col-visibility-hidden");
+          td.classList.add("col-align-" + (colAlign[c] || "left"));
 
           const isMergeCol = mergeCols.indexOf(c) >= 0;
           const isFirstInGroup = (info.firstRowIdx === i);

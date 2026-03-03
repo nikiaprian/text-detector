@@ -620,16 +620,26 @@ def _looks_like_address_or_wrong_text(s: str) -> bool:
 
 
 def _looks_like_change_value(s: str) -> bool:
-    """True jika nilai mirip kolom Perubahan: angka kecil, 0, atau '-'."""
+    """True jika nilai mirip kolom Perubahan: angka kecil, 0, angka negatif (minus), atau '-'."""
     if not s:
         return True
     t = s.strip()
     if t == "-":
         return True
-    t = t.replace(",", "").replace(" ", "")
+    # Izinkan angka negatif (mis. -2,500,000 atau -3500000)
+    sign = 1
+    if t.startswith("-"):
+        sign = -1
+        t = t[1:].lstrip()
+    t = t.replace(",", "").replace(" ", "").replace(".", "")
     if not t.isdigit():
         return False
-    return int(t) >= 0 and len(t) <= 15  # angka wajar untuk perubahan
+    try:
+        v = int(t) * sign
+    except ValueError:
+        return False
+    # Perubahan: boleh negatif, nilai absolut wajar (max ~15 digit)
+    return abs(v) <= 10**15 and len(t) <= 15
 
 
 def _fix_split_percentage_cells(cells: list, num_cols: int) -> None:
@@ -2321,14 +2331,17 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
             filled = False
             no_lower_str = str(no_lower).strip() if no_lower not in (None, "") else ""
             for v in change_vals:
-                vstrip = v.strip()
+                vstrip = (v or "").strip()
                 if no_lower_str and vstrip == no_lower_str:
                     continue
-                if len(vstrip) <= 4 and vstrip.isdigit():
-                    row_lower[idx_perubahan_18] = vstrip
-                    data_18[i + 1] = row_lower
-                    filled = True
-                    break
+                if not _looks_like_change_value(vstrip):
+                    continue
+                if _looks_like_large_number(vstrip) or _looks_like_percentage_value(vstrip):
+                    continue
+                row_lower[idx_perubahan_18] = vstrip
+                data_18[i + 1] = row_lower
+                filled = True
+                break
             pl_upper = get_18(idx_perubahan_18, row_upper)
             upper_perubahan_empty = not pl_upper or pl_upper.strip() == "-"
             if not filled and (get_18(idx_perubahan_18, row_lower) == "-" or not get_18(idx_perubahan_18, row_lower)):
@@ -2748,28 +2761,58 @@ def _apply_raw_blue_fix_same_no_baris_bawah(
                 next_no_str = w
                 break
 
-        # Cari triple (angka_besar, angka_besar, perubahan) di segmen yang berbeda dari baris pertama.
-        # Untuk baris bawah (mis. 318 bawah): pilih triple dengan Perubahan=0 jika ada, else triple terakhir.
-        # Rentang: i sampai i+2 harus dalam segment; sertakan sampai ujung segmen.
+        # Kumpulkan semua triple (angka_besar, angka_besar, perubahan) di segmen, tidak tumpang-tindih (untuk No multi-baris mis. 674).
         seg_end = min(segment_end, len(lines))
-        i_end = min(seg_end - 1, len(lines) - 2) if len(lines) >= 2 else pos_no + 1
-        candidates = []
-        for i in range(pos_no + 1, i_end):
+        i_end = min(seg_end - 2, len(lines) - 3) if len(lines) >= 3 else pos_no
+        all_triples = []
+        i = pos_no + 1
+        while i <= i_end:
             v1, v2, v3 = (lines[i] or "").strip(), (lines[i + 1] or "").strip(), (lines[i + 2] or "").strip()
             ok1 = _looks_like_large_number(v1) and not _looks_like_percentage_value(v1)
             ok2 = _looks_like_large_number(v2) and not _looks_like_percentage_value(v2)
             ok3 = _looks_like_change_value(v3)
-            if not ok1 or not ok2 or not ok3:
-                continue
-            if (v1, v2) != (j1_first, j2_first):
-                candidates.append((i, v3))
+            if ok1 and ok2 and ok3:
+                all_triples.append((i, v1, v2, v3))
+                i += 3
+            else:
+                i += 1
+        # Untuk kompatibilitas 2 baris (318/707): kandidat triple yang beda dari baris pertama
+        candidates = [(idx, pv) for idx, _v1, _v2, pv in all_triples if (_v1, _v2) != (j1_first, j2_first)]
         triple_start = None
-        for i, pv in candidates:
-            if (pv or "").strip() == "0":
-                triple_start = i
-                break
-        if triple_start is None and candidates:
-            triple_start = candidates[-1][0]
+        if len(indices) == 2 and candidates:
+            for i, pv in candidates:
+                if (pv or "").strip() == "0":
+                    triple_start = i
+                    break
+            if triple_start is None:
+                triple_start = candidates[-1][0]
+        # Jika ada banyak baris dan cukup triple, isi tiap baris dari triple yang sesuai (mis. 674: baris 1 = -2,500,000, baris 10 = -3,500,000)
+        n_assign = min(len(all_triples), len(indices))
+        if n_assign >= 1 and len(indices) > 2:
+            for t in range(n_assign):
+                row_idx = indices[t]
+                row = list(data_rows[row_idx])
+                while len(row) < ncols:
+                    row.append("-")
+                _, v1, v2, pv = all_triples[t]
+                if t == 0:
+                    cur_p = (row[idx_perubahan] or "").strip() or "-"
+                    if cur_p == "-" or not cur_p:
+                        row[idx_perubahan] = (pv or "").strip() or "-"
+                else:
+                    row[idx_j1] = v1
+                    row[idx_j2] = v2
+                    row[idx_perubahan] = (pv or "").strip()
+                    if (pv or "").strip() == "0" and v1 == v2:
+                        row[idx_j1] = "-"
+                    if idx_saham_gab1 < ncols:
+                        row[idx_saham_gab1] = (first_row[idx_saham_gab1] or "").strip() or "-"
+                    if idx_saham_gab2 < ncols:
+                        row[idx_saham_gab2] = (first_row[idx_saham_gab2] or "").strip() or "-"
+                data_rows[row_idx] = row
+            if debug_ref is not None and no == "707":
+                debug_ref["707"] = {"path": "multi-triple", "n_triples": len(all_triples), "n_indices": len(indices)}
+            continue
         if triple_start is None:
             # Fallback: baris bawah hanya punya satu nilai (mis. 487 di Jumlah Saham (2)), baris atas Perubahan = -nilai
             # Hanya nilai 3+ digit (100-9999) agar tidak ambil "2", "19" dari alamat (Lantai 2, Ruang 210, dll.)
@@ -2779,18 +2822,24 @@ def _apply_raw_blue_fix_same_no_baris_bawah(
                     w = (lines[i] or "").strip()
                     if not w or w == "-":
                         continue
-                    w_normalized = w.replace(",", "").replace(" ", "").replace(".", "", 1)
-                    if not w_normalized.isdigit():
+                    # Izinkan angka negatif (mis. -2,500,000)
+                    w_clean = w.replace(",", "").replace(" ", "").replace(".", "", 1)
+                    if w_clean.startswith("-"):
+                        w_clean = w_clean[1:]
+                    if not w_clean.isdigit():
                         continue
+                    w_norm = w.replace(",", "").replace(" ", "").replace(".", "")
                     try:
-                        v = int(w_normalized)
+                        v = int(w_norm)
                     except ValueError:
                         continue
                     if _looks_like_large_number(w) or _looks_like_percentage_value(w):
                         continue
-                    # Minimal 3 digit (100-9999) untuk Perubahan/J2 yang wajar; hindari 0, 2, 19 dari teks
-                    if 100 <= v <= 9999:
-                        out_list.append((i, str(v)))
+                    if not _looks_like_change_value(w):
+                        continue
+                    # Nilai Perubahan wajar: 0, kecil (100-9999), atau negatif (mis. -2500000)
+                    if v == 0 or 100 <= abs(v) <= 9999 or (abs(v) >= 100000 and abs(v) <= 10**12):
+                        out_list.append((i, w))
                 return out_list
 
             change_like_in_segment = _collect_change_like(pos_no + 1, seg_end)
