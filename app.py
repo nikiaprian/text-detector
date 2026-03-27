@@ -513,11 +513,36 @@ def _fix_no_kode_efek_cells(cells: list, num_cols: int) -> None:
     - Jika sel 0 berisi "247 BKSL" (gabungan), pecah jadi No=247, Kode Efek=BKSL.
     - Jika sel 0 = kode efek dan sel 1 = nomor → tukar.
     - Jika sel 0 = kode efek dan sel 1 bukan nomor → pindah sel 0 ke sel 1 (Kode Efek), No kosong.
+    - Jika sel 0 = "-", sel 2 diawali nomor (mis. "675 PERDANA...") → pindah nomor ke sel 0 agar 674 dan 675 terpisah.
     """
     if num_cols < 2:
         return
     col0 = (cells[0] if len(cells) > 0 else "").strip()
     col1 = (cells[1] if len(cells) > 1 else "").strip()
+    # No di kolom 1 saat kolom 0 kosong (mis. "-" dan "675"): pindah ke kolom 0 agar 674 dan 675 terpisah
+    if (not col0 or col0 == "-") and col1 and _looks_like_no(col1):
+        cells[0] = col1
+        cells[1] = "-"
+        return
+    # No di kolom 2–4 saat kolom 0 kosong: cari nilai yang mirip No (standalone angka 2–6 digit) agar 674 dan 675 terpisah
+    if not col0 or col0 == "-":
+        for c in range(2, min(5, num_cols)):
+            if c >= len(cells):
+                break
+            val = (cells[c] or "").strip()
+            if _looks_like_no(val):
+                cells[0] = val
+                cells[c] = "-"
+                return
+            m2 = re.match(r"^\s*(\d{2,6})\s+(.*)$", val)
+            if m2:
+                no_cand, rest2 = m2.group(1).strip(), m2.group(2).strip()
+                if _looks_like_no(no_cand):
+                    cells[0] = no_cand
+                    cells[c] = rest2 if rest2 else "-"
+                    return
+        # Kolom 0 tetap kosong: jangan ubah baris ini lagi
+        return
     if not col0:
         return
     m = NO_KODE_EFEK_PATTERN.match(col0)
@@ -538,9 +563,146 @@ def _fix_no_kode_efek_cells(cells: list, num_cols: int) -> None:
     if _looks_like_no(col1):
         cells[0], cells[1] = col1, col0
         return
-    cells[0] = "-"
-    if not col1 or col1 == "-":
+    # Kasus umum merge-cell: No kosong → baris bergeser ke kiri sehingga ticker masuk ke kolom No.
+    # Jika kolom 1 terlihat seperti Nama Emiten dan kolom 2 terlihat seperti nama pemegang/sekuritas,
+    # anggap baris geser kiri 1 kolom: geser kanan agar kolom tetap selaras.
+    col2 = (cells[2] if len(cells) > 2 else "").strip() if num_cols >= 3 else ""
+    if col1 and _looks_like_company_name(col1) and col2 and (not _looks_like_company_name(col2)) and (
+        _looks_like_person_name(col2) or _looks_like_securities_name(col2) or _looks_like_text_not_number(col2)
+    ):
+        # shift right by 1 from index 1..end
+        for j in range(min(num_cols, len(cells)) - 1, 1, -1):
+            cells[j] = cells[j - 1]
         cells[1] = col0
+        cells[0] = "-"
+    else:
+        cells[0] = "-"
+        cells[1] = col0
+
+    # Setelah kode dipindah, coba pulihkan No jika angka No ternyata tertangkap di kolom identitas (1–5)
+    # karena merge-cell / salah segmentasi kolom.
+    for c in range(2, min(6, num_cols)):
+        if c >= len(cells):
+            break
+        val = (cells[c] or "").strip()
+        if not val or val == "-":
+            continue
+        if _looks_like_no(val):
+            cells[0] = val
+            cells[c] = "-"
+            break
+        m2 = re.match(r"^\s*(\d{2,6})\s+(.*)$", val)
+        if m2:
+            no_cand, rest2 = m2.group(1).strip(), m2.group(2).strip()
+            if _looks_like_no(no_cand):
+                cells[0] = no_cand
+                cells[c] = rest2 if rest2 else "-"
+                break
+
+
+def _fill_missing_no_by_merge_signature(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Isi No untuk baris yang No-nya "-" bila baris tsb jelas satu grup merge-cell dengan baris bernomor terdekat.
+
+    Patokan yang relatif stabil lintas PDF:
+    - Kode Efek
+    - Nama Emiten
+    - Nama Pemegang Saham
+    - Saham Gabungan Per Investor (1)/(2)
+    - Persentase Kepemilikan (1)/(2)
+
+    Fungsi ini dibuat konservatif agar tidak "menyeret" baris prelude milik nomor berikutnya.
+    """
+    if not rows or num_cols < 6:
+        return rows
+
+    idx_no = 0
+    idx_kode = 1
+    idx_emiten = 2
+    idx_pemegang = 4
+    idx_sg1 = 12
+    idx_pct1 = 13
+    idx_sg2 = 15
+    idx_pct2 = 16
+
+    def norm_text(v: str) -> str:
+        if not v or v == "-":
+            return ""
+        return " ".join(v.upper().replace(",", " ").split())
+
+    def norm_num(v: str) -> str:
+        if not v or v == "-":
+            return ""
+        t = v.strip()
+        # normalize angka: hapus pemisah ribuan dan spasi; biarkan minus dan titik desimal
+        t = t.replace(" ", "").replace(",", "")
+        return t
+
+    def sig_parts(r: list) -> dict:
+        def get(i: int) -> str:
+            return (r[i] if i < len(r) else "").strip() if r else ""
+
+        return {
+            "kode": norm_text(get(idx_kode)),
+            "emiten": norm_text(get(idx_emiten)),
+            "pemegang": norm_text(get(idx_pemegang)),
+            "sg1": norm_num(get(idx_sg1)),
+            "pct1": norm_num(get(idx_pct1)),
+            "sg2": norm_num(get(idx_sg2)),
+            "pct2": norm_num(get(idx_pct2)),
+        }
+
+    out = [list(r) for r in rows]
+    for i in range(1, len(out)):
+        r = out[i]
+        no = (r[idx_no] or "").strip()
+        if no and no != "-":
+            continue
+        kode = (r[idx_kode] or "").strip()
+        if not kode or kode == "-" or not _looks_like_stock_code(kode):
+            continue
+
+        prev = out[i - 1]
+        prev_no = (prev[idx_no] or "").strip()
+        if not prev_no or prev_no == "-" or not _looks_like_no(prev_no):
+            continue
+
+        cur_sig = sig_parts(r)
+        prev_sig = sig_parts(prev)
+
+        # Harus match kode + minimal satu patokan merge lain (emiten/pemegang/sg/pct) agar aman.
+        if not cur_sig["kode"] or cur_sig["kode"] != prev_sig["kode"]:
+            continue
+
+        matches = 0
+        compared = 0
+        for k in ("emiten", "pemegang", "sg1", "pct1", "sg2", "pct2"):
+            a = cur_sig.get(k) or ""
+            b = prev_sig.get(k) or ""
+            if a and b:
+                compared += 1
+                if a == b:
+                    matches += 1
+                else:
+                    matches = -999  # mismatch keras
+                    break
+
+        # Jika cur tidak punya patokan selain kode, jangan isi No (menghindari salah grup).
+        if compared <= 0 or matches < compared or matches <= 0:
+            continue
+
+        # Aman: isi No dan ffill kolom patokan yang kosong dari baris sebelumnya.
+        r[idx_no] = prev_no
+        for j in (idx_emiten, idx_pemegang, idx_sg1, idx_pct1, idx_sg2, idx_pct2):
+            if j < len(r):
+                v = (r[j] or "").strip()
+                if not v or v == "-":
+                    pv = (prev[j] or "").strip() if j < len(prev) else ""
+                    if pv and pv != "-":
+                        r[j] = pv
+        out[i] = r
+
+    return out
 
 
 def _fix_kode_emiten_cells(cells: list, num_cols: int) -> None:
@@ -620,26 +782,22 @@ def _looks_like_address_or_wrong_text(s: str) -> bool:
 
 
 def _looks_like_change_value(s: str) -> bool:
-    """True jika nilai mirip kolom Perubahan: angka kecil, 0, angka negatif (minus), atau '-'."""
+    """True jika nilai mirip kolom Perubahan: angka kecil, 0, atau '-'."""
     if not s:
         return True
     t = s.strip()
     if t == "-":
         return True
-    # Izinkan angka negatif (mis. -2,500,000 atau -3500000)
-    sign = 1
-    if t.startswith("-"):
-        sign = -1
-        t = t[1:].lstrip()
-    t = t.replace(",", "").replace(" ", "").replace(".", "")
-    if not t.isdigit():
+    # Izinkan tanda minus untuk nilai negatif (mis. "-2,500,000")
+    t_clean = t.replace(",", "").replace(" ", "").replace(".", "")
+    if t_clean.startswith("-"):
+        t_digits = t_clean[1:]
+    else:
+        t_digits = t_clean
+    if not t_digits.isdigit():
         return False
-    try:
-        v = int(t) * sign
-    except ValueError:
-        return False
-    # Perubahan: boleh negatif, nilai absolut wajar (max ~15 digit)
-    return abs(v) <= 10**15 and len(t) <= 15
+    # Batas panjang wajar untuk nilai perubahan (orde sampai triliunan)
+    return len(t_digits) <= 15
 
 
 def _fix_split_percentage_cells(cells: list, num_cols: int) -> None:
@@ -735,6 +893,54 @@ def _fix_jumlah_saham_split_percentage(cells: list, num_cols: int) -> None:
                     else:
                         cells[idx_jumlah] = "-"
 
+
+def _split_amount_and_negative_change(cells: list, num_cols: int) -> None:
+    """
+    Pisahkan nilai gabungan seperti "328,400,000-2,500,000" menjadi:
+    - angka besar (Jumlah/Saham Gabungan)
+    - angka kecil negatif di kolom Perubahan.
+
+    Contoh kasus: No 674 / 675, dimana PDF menulis "113,500,000-3,500,000" tanpa spasi.
+    Jangan pisah "120-120" atau "0-120" (baris 674 ke-4: 120 120 0) agar Perubahan tidak jadi -120.
+    """
+    if num_cols < 18:
+        return
+    idx_perubahan = 17
+    # Periksa seluruh blok numerik 11-17
+    for j in range(11, min(18, num_cols)):
+        val = str(cells[j] if j < len(cells) else "").strip()
+        if not val or val == "-":
+            continue
+        # Hanya tangani pola "<angka_besar>-<angka_kecil>" (tanpa teks lain)
+        m = re.match(r"^\s*([0-9][0-9\.,]*)\s*-\s*([0-9][0-9\.,]*)\s*$", val)
+        if not m:
+            continue
+        left = m.group(1).strip()
+        right_raw = m.group(2).strip()
+        right = "-" + right_raw
+        # Validasi: kiri = angka besar, kanan = nilai perubahan (kecil, boleh negatif)
+        if not _looks_like_large_number(left):
+            continue
+        if not _looks_like_change_value(right) or _looks_like_large_number(right):
+            continue
+        # Jangan pisah jika kiri dan kanan (angka) sama: "120-120" = J2=120, Perubahan=0 (bukan -120)
+        left_digits = left.replace(",", "").replace(".", "").replace(" ", "")
+        right_digits = right_raw.replace(",", "").replace(".", "").replace(" ", "")
+        if left_digits.isdigit() and right_digits.isdigit() and left_digits == right_digits:
+            continue
+        # Jangan pisah jika kiri = 0: "0-120" salah kolom, jangan isi Perubahan dengan -120
+        if left_digits.isdigit() and int(left_digits) == 0:
+            continue
+        # Simpan angka besar di kolom asal
+        while len(cells) <= j:
+            cells.append("-")
+        cells[j] = left
+        # Isi Perubahan hanya jika masih kosong
+        while len(cells) <= idx_perubahan:
+            cells.append("-")
+        cur_perubahan = str(cells[idx_perubahan] or "").strip() or "-"
+        if cur_perubahan == "-":
+            cells[idx_perubahan] = right
 
 def _fix_perubahan_split_percentage_then_number(cells: list, num_cols: int) -> None:
     """
@@ -834,6 +1040,8 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
     _fix_split_percentage_cells(cells, num_cols)
     # Pisah nilai persen dari kolom Jumlah Saham yang berisi "persen angka_besar"
     _fix_jumlah_saham_split_percentage(cells, num_cols)
+    # Pisah nilai gabungan "jumlah-perubahan" (mis. "328,400,000-2,500,000")
+    _split_amount_and_negative_change(cells, num_cols)
 
     # Jumlah Saham dan Saham Gabungan (11, 12, 14, 15) tidak boleh berisi teks (alamat, nama rekening efek)
     for idx_jar in (11, 12, 14, 15):
@@ -844,6 +1052,16 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
             while len(cells) <= idx_jar:
                 cells.append("-")
             cells[idx_jar] = "-"
+
+    # Kolom numerik (11-17) tidak boleh berisi Status "L"/"A" (salah tempat dari kolom Status Lokal/Asing)
+    for idx_num in (11, 12, 13, 14, 15, 16, 17):
+        if idx_num >= num_cols:
+            break
+        v = get(idx_num)
+        if v and len(v) == 1 and v.isalpha():
+            while len(cells) <= idx_num:
+                cells.append("-")
+            cells[idx_num] = "-"
 
     # Jika Persentase (1) berisi teks (nama rekening efek, nama pemegang saham dll), cari nilai persen di SELURUH BARIS
     val13 = get(idx_pct1)
@@ -988,17 +1206,38 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
     if (val16_after == "-" or not val16_after):
         # Jika periode 2 punya data, cari nilai persen untuk Persentase (2)
         if has_period2_data_after:
+            # Prioritas: jika di baris ini ada DUA nilai persen berbeda (pola 318: 11.74 & 11.76),
+            # isi Persentase (2) dengan nilai persen yang BERBEDA dari Persentase (1).
+            pct_from_other = None
             for j in range(num_cols):
                 if j == idx_pct2 or j == idx_pct1:
                     continue
-                val_j = get(j)
-                if _looks_like_percentage_value(val_j):
-                    while len(cells) <= idx_pct2:
-                        cells.append("-")
-                    cells[idx_pct2] = val_j
-                    if j != idx_perubahan:
-                        cells[j] = "-"
+                vj = get(j)
+                if _looks_like_percentage_value(vj):
+                    if _looks_like_percentage_value(val13_final) and vj.strip() == val13_final.strip():
+                        continue
+                    pct_from_other = (j, vj)
                     break
+            if pct_from_other is not None:
+                j, pct_val = pct_from_other
+                while len(cells) <= idx_pct2:
+                    cells.append("-")
+                cells[idx_pct2] = pct_val
+                if j != idx_perubahan:
+                    cells[j] = "-"
+            else:
+                # Fallback: ambil persen pertama dari kolom lain (perilaku lama)
+                for j in range(num_cols):
+                    if j == idx_pct2 or j == idx_pct1:
+                        continue
+                    val_j = get(j)
+                    if _looks_like_percentage_value(val_j):
+                        while len(cells) <= idx_pct2:
+                            cells.append("-")
+                        cells[idx_pct2] = val_j
+                        if j != idx_perubahan:
+                            cells[j] = "-"
+                        break
         # Jika periode 2 tidak punya data, gunakan logika lama (nilai persen kedua)
         elif len(percentages_found) > 1:
             found_count = 0
@@ -1106,6 +1345,37 @@ def _fix_numeric_block_by_content(cells: list, num_cols: int) -> None:
                 cells.append("-")
             cells[idx_perubahan] = "-"
 
+    # Persentase (2) tidak boleh berisi Jumlah Saham (angka besar)
+    val16_final = get(idx_pct2)
+    if val16_final != "-" and _looks_like_large_number(val16_final):
+        while len(cells) <= idx_pct2:
+            cells.append("-")
+        cells[idx_pct2] = "-"
+
+    # Perubahan tidak boleh bernilai minus dari J1/J2 (mis. -120 ketika J1 atau J2 = 120; harus 0)
+    def _parse_int_cell(idx: int) -> int | None:
+        v = get(idx)
+        if not v or v == "-":
+            return None
+        t = v.replace(",", "").replace(" ", "").replace(".", "").strip()
+        if t.startswith("-"):
+            t = t[1:]
+        if not t.isdigit():
+            return None
+        return int(t)
+
+    val17_final = get(idx_perubahan)
+    if val17_final and val17_final != "-":
+        t17 = val17_final.replace(",", "").replace(" ", "").strip()
+        if t17.startswith("-") and t17[1:].isdigit():
+            abs17 = int(t17[1:])
+            j1_val = _parse_int_cell(idx_jumlah1)
+            j2_val = _parse_int_cell(idx_jumlah2)
+            if (j1_val is not None and abs17 == j1_val) or (j2_val is not None and abs17 == j2_val):
+                while len(cells) <= idx_perubahan:
+                    cells.append("-")
+                cells[idx_perubahan] = "0"
+
 
 def _fix_persentase_perubahan_cells(cells: list, num_cols: int) -> None:
     """
@@ -1163,6 +1433,24 @@ def _merge_continuation_rows(rows: list[list], num_cols: int) -> list[list]:
             no_next = (next_row[0] or "").strip()
             if no_next and no_next != "-" and _looks_like_no(no_next):
                 break
+            # Jika baris lanjutan punya No di kolom 1–4 (mis. "675"), jangan merge agar 674 dan 675 terpisah
+            no_cur = (row[0] or "").strip() if _looks_like_no((row[0] or "").strip()) else None
+            effective_no_next = no_next if _looks_like_no(no_next) else None
+            if not effective_no_next:
+                for col_idx in range(1, min(5, num_cols)):
+                    if col_idx >= len(next_row):
+                        break
+                    v = (next_row[col_idx] or "").strip()
+                    if _looks_like_no(v):
+                        effective_no_next = v
+                        break
+                    mm = re.match(r"^\s*(\d{2,6})\s", v)
+                    if mm and _looks_like_no(mm.group(1).strip()):
+                        effective_no_next = mm.group(1).strip()
+                        break
+            # Jangan merge bila baris lanjutan punya No (mis. 675): agar 674 dan 675 terpisah
+            if effective_no_next and (no_cur is None or effective_no_next != no_cur):
+                break
             # Jangan merge hanya jika baris lanjutan punya data numerik BEDA dari baris saat ini (baris data baru, mis. 497).
             # Jika numerik sama atau baris lanjutan hanya isi kosong → merge (lanjutan/duplikat, mis. 247/318 baris ke-3).
             idx_numeric_start = 11
@@ -1186,19 +1474,18 @@ def _merge_continuation_rows(rows: list[list], num_cols: int) -> list[list]:
                     break
             if next_has_different_numeric:
                 break
-            empty_idx = [j for j in range(num_cols) if not (row[j] and str(row[j]).strip() and str(row[j]).strip() != "-")]
-            values = [str(next_row[j]).strip() for j in range(num_cols) if next_row[j] and str(next_row[j]).strip() != "-"]
-            if not values:
+            # PENTING: jangan "packing" nilai ke kolom kosong karena bisa menggeser kolom (mis. Kode Efek masuk kolom No).
+            # Isi hanya kolom yang sama (ffill per-kolom) agar struktur 18 kolom tetap stabil lintas PDF.
+            any_filled = False
+            for j in range(num_cols):
+                cur = (row[j] or "").strip()
+                nxt = (next_row[j] or "").strip()
+                if (not cur or cur == "-") and nxt and nxt != "-":
+                    row[j] = next_row[j]
+                    any_filled = True
+            if not any_filled:
                 i += 1
                 continue
-            if len(empty_idx) >= len(values):
-                start = len(empty_idx) - len(values)
-                for k, v in enumerate(values):
-                    row[empty_idx[start + k]] = v
-            else:
-                for k, j in enumerate(empty_idx):
-                    if k < len(values):
-                        row[j] = values[k]
             i += 1
         result.append(row)
         i += 1
@@ -1280,6 +1567,347 @@ def _remove_duplicate_data_rows(raw_data_rows: list[tuple], num_cols: int) -> li
             ):
                 continue
         result.append(row_meta)
+    return result
+
+
+def _forward_fill_emiten_in_blocks(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Forward-fill Nama Emiten (kolom 2) ke baris bawah yang kosong selama Kode Efek sama.
+    Agar baris lanjutan dalam satu blok merge-cell punya Nama Emiten yang sama dengan baris pertama.
+    """
+    if num_cols < 3 or not rows:
+        return rows
+    idx_kode = 1
+    idx_emiten = 2
+    out = [list(r) for r in rows]
+    for i in range(1, len(out)):
+        r = out[i]
+        emiten = (r[idx_emiten] if idx_emiten < len(r) else "").strip()
+        kode = (r[idx_kode] if idx_kode < len(r) else "").strip()
+        if (not emiten or emiten == "-") and kode and kode != "-":
+            prev = out[i - 1]
+            prev_kode = (prev[idx_kode] if idx_kode < len(prev) else "").strip()
+            prev_emiten = (prev[idx_emiten] if idx_emiten < len(prev) else "").strip()
+            if prev_kode == kode and prev_emiten and prev_emiten != "-":
+                r[idx_emiten] = prev_emiten
+                out[i] = r
+    return out
+
+
+def _reassign_no_by_emiten_block(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Tetapkan No berdasarkan ENTITAS pemegang/rekening (tanpa hardcode), bukan hanya posisi:
+
+    - Entitas = (Kode Efek, nama pemegang/rekening). Nama diambil dari kolom yang terisi:
+      Nama Pemegang Saham (4), Nama Pemegang Rekening Efek (3), atau Nama Rekening Efek (5).
+    - Semua baris dengan entitas yang sama mewarisi No yang sama (674, 675, dst).
+
+    Dengan memasukkan Nama Rekening Efek (5), baris yang punya "ADITYA ANTONIUS" di kolom
+    Rekening Efek saja ikut 675; tetap generik untuk banyak PDF.
+    """
+    if num_cols < 5 or not rows:
+        return rows
+
+    idx_no = 0
+    idx_kode = 1
+    idx_pemegang_rekening = 3   # Nama Pemegang Rekening Efek
+    idx_pemegang_saham = 4      # Nama Pemegang Saham
+    idx_nama_rekening_efek = 5  # Nama Rekening Efek (trigger untuk 675 bila sama)
+
+    def _norm_text(s: str) -> str:
+        if not s:
+            return ""
+        t = s.strip().upper().replace(",", " ")
+        return " ".join(t.split())
+
+    def _entity_key(r: list) -> tuple[str, str]:
+        kode = _norm_text(r[idx_kode] if idx_kode < len(r) else "")
+        raw_pem_saham = r[idx_pemegang_saham] if idx_pemegang_saham < len(r) else ""
+        raw_pem_rek = r[idx_pemegang_rekening] if idx_pemegang_rekening < len(r) else ""
+        raw_nama_rek = r[idx_nama_rekening_efek] if idx_nama_rekening_efek < len(r) else ""
+
+        pem_saham = _norm_text(raw_pem_saham)
+        pem_rek = _norm_text(raw_pem_rek)
+        nama_rek = _norm_text(raw_nama_rek)
+
+        # Heuristik pemilihan nama entitas:
+        # - Jika ada nama rekening yang terlihat seperti nama orang (ADITYA ANTONIUS) dan
+        #   Pemegang Saham/ Rekening tampak seperti institusi (sekuritas, bank, PT, Tbk),
+        #   gunakan nama rekening sebagai identitas entitas (sesuai struktur laporan BEI).
+        def _is_person(s: str) -> bool:
+            return bool(s and _looks_like_person_name(s))
+
+        def _is_institution(s: str) -> bool:
+            return bool(s and _looks_like_securities_name(s))
+
+        name = ""
+        if nama_rek and _is_person(nama_rek) and not _is_person(pem_saham or pem_rek):
+            name = nama_rek
+        else:
+            name = pem_saham or pem_rek or nama_rek
+
+        return (kode, name)
+
+    out = [list(r) for r in rows]
+
+    # Pass 1: kumpulkan No per entitas
+    no_by_entity: dict[tuple[str, str], str] = {}
+    for r in out:
+        key = _entity_key(r)
+        if not key[0] or not key[1]:
+            continue
+        no_val = (r[idx_no] if idx_no < len(r) else "") or ""
+        no_str = str(no_val).strip()
+        if no_str and no_str != "-" and _looks_like_no(no_str):
+            # Jika entitas muncul lagi dengan No berbeda, pilih No pertama (stabil)
+            no_by_entity.setdefault(key, no_str)
+
+    if not no_by_entity:
+        return out
+
+    # Pass 2: terapkan No entitas ke semua baris dengan key sama
+    for r in out:
+        key = _entity_key(r)
+        if not key[0] or not key[1]:
+            continue
+        no_ent = no_by_entity.get(key)
+        if not no_ent:
+            continue
+        r_no = (r[idx_no] if idx_no < len(r) else "") or ""
+        r_no_str = str(r_no).strip()
+        # Jika baris sudah punya No tetapi berbeda dengan No entitas, ikuti No entitas
+        if not r_no_str or r_no_str == "-" or r_no_str != no_ent:
+            r[idx_no] = no_ent
+
+    return out
+
+
+def _enforce_monotonic_no(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Asumsi umum tabel: kolom No. Urut naik monoton dari atas ke bawah dan
+    tidak pernah menurun. Terapkan aturan ini tanpa hardcode:
+
+    - Jika bertemu No baru (mis. 675) yang lebih besar dari No sebelumnya, jadikan
+      itu No aktif.
+    - Jika baris berikutnya punya No kosong/"-" atau No yang lebih kecil dari No aktif
+      padahal Kode Efek sama, paksa No baris itu menjadi No aktif.
+
+    Ini mencegah munculnya kembali 674 di bawah 675 pada Kode Efek yang sama,
+    sekaligus aman untuk PDF lain karena hanya mengandalkan urutan No numerik.
+    """
+    if num_cols < 2 or not rows:
+        return rows
+
+    idx_no = 0
+    idx_kode = 1
+
+    def _kode(r: list) -> str:
+        return str(r[idx_kode]).strip() if idx_kode < len(r) and r[idx_kode] not in (None, "") else ""
+
+    out = [list(r) for r in rows]
+    last_no_val: int | None = None
+    last_kode = ""
+
+    for r in out:
+        kode = _kode(r)
+        if not kode or kode == "-":
+            # reset di blok lain/garis kosong
+            last_no_val = None
+            last_kode = ""
+            continue
+
+        if kode != last_kode:
+            # blok kode baru: reset nomor aktif
+            last_no_val = None
+            last_kode = kode
+
+        raw_no = (r[idx_no] if idx_no < len(r) else "") or ""
+        no_str = str(raw_no).strip()
+        cur_val: int | None = None
+        if no_str and no_str != "-" and _looks_like_no(no_str):
+            try:
+                cur_val = int(no_str.replace(",", "").replace(" ", ""))
+            except ValueError:
+                cur_val = None
+
+        if cur_val is not None:
+            if last_no_val is None or cur_val >= last_no_val:
+                last_no_val = cur_val
+            elif last_no_val is not None and cur_val < last_no_val:
+                # No menurun dalam blok kode yang sama → paksa naik ke last_no_val
+                r[idx_no] = str(last_no_val)
+        else:
+            # No kosong atau bukan angka, tapi kita punya No aktif → pakai No aktif
+            if last_no_val is not None:
+                r[idx_no] = str(last_no_val)
+
+    return out
+
+
+def _remove_duplicate_merge_summary_rows(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Hapus baris duplikat 'summary' merge-cell (tanpa hardcode):
+    - Same No, Kode, Nama Pemegang dengan baris sebelumnya dan seluruh blok 11-17 identik; atau
+    - Same No, Kode, Nama Pemegang dan baris ini punya Jumlah(1)/(2) kecil (mis. 120) sementara
+      Saham Gabungan(1)/(2) besar (nilai merged) — baris yang hanya menampilkan ulang nilai merged.
+    """
+    if num_cols < 18 or len(rows) < 2:
+        return rows
+    idx_no, idx_kode, idx_pemegang = 0, 1, 4
+    idx_j1, idx_sg1, idx_j2, idx_sg2 = 11, 12, 14, 15
+    num_start, num_end = 11, 18
+
+    def v(r: list, i: int) -> str:
+        return (r[i] if i < len(r) else "").strip() or "-"
+
+    def is_small_number(s: str) -> bool:
+        if not s or s == "-":
+            return False
+        t = s.replace(",", "").replace(" ", "").strip()
+        if not t.isdigit():
+            return False
+        return len(t) <= 4
+
+    def is_large_number(s: str) -> bool:
+        return bool(s and s != "-" and _looks_like_large_number(s))
+
+    result = [list(rows[0])]
+    for i in range(1, len(rows)):
+        cur = rows[i]
+        prev = result[-1]
+        if v(cur, idx_no) != v(prev, idx_no) or v(cur, idx_kode) != v(prev, idx_kode):
+            result.append(list(cur))
+            continue
+        if v(cur, idx_pemegang) != v(prev, idx_pemegang):
+            result.append(list(cur))
+            continue
+        same_numeric = all(v(cur, j) == v(prev, j) for j in range(num_start, min(num_end, num_cols)))
+        if same_numeric:
+            continue
+        j1, j2, sg1, sg2 = v(cur, idx_j1), v(cur, idx_j2), v(cur, idx_sg1), v(cur, idx_sg2)
+        if is_small_number(j1) and is_small_number(j2) and is_large_number(sg1) and is_large_number(sg2):
+            continue
+        if v(cur, idx_sg1) == v(prev, idx_sg1) and v(cur, idx_sg2) == v(prev, idx_sg2) and v(cur, idx_j1) == v(cur, idx_sg1) and v(cur, idx_j2) == v(cur, idx_sg2):
+            continue
+        result.append(list(cur))
+    return result
+
+
+def _assign_continuation_rows_to_no_by_pemegang(rows: list[list], num_cols: int) -> list[list]:
+    """
+    Perbaiki kasus "prelude row": ada beberapa baris dengan No "-" tepat SEBELUM baris bernomor (mis. 675),
+    namun baris-barisi itu sebenarnya milik nomor berikutnya (675) karena Kode Efek dan pemegangnya sama.
+
+    Strategi yang aman:
+    - Untuk setiap baris bernomor (No numerik), lihat baris-baris di atasnya yang masih No "-" secara berurutan.
+    - Jika Kode Efek sama dan nama pemegang cocok, tetapkan No baris "-" tersebut menjadi No baris bernomor itu.
+    - Berhenti saat bertemu baris yang bukan "-" atau saat ada mismatch (kode/pemegang).
+
+    Ini mengatasi kasus GPRA 674/675 (dua baris ADITYA ANTONIUS sebelum 675) tanpa mengacaukan nomor lain,
+    dan frontend grouping akan otomatis memisahkan grup dengan benar.
+    """
+    if num_cols < 5 or not rows:
+        return rows
+    idx_no = 0
+    idx_rekening = 3
+    idx_pemegang = 4
+    idx_kode = 1
+    result = [list(r) for r in rows]
+
+    def _nama_ref(r, idx):
+        return (r[idx] if idx < len(r) else "").strip()
+
+    def _nama_norm(s):
+        if not s or s == "-":
+            return ""
+        return s.upper().replace(",", " ").strip()
+
+    def _nama_match(ref_norm, row):
+        if not ref_norm:
+            return False
+        a = _nama_norm(_nama_ref(row, idx_pemegang))
+        b = _nama_norm(_nama_ref(row, idx_rekening))
+        if not a and not b:
+            return False
+        return (
+            ref_norm == a or ref_norm == b
+            or (ref_norm in a or a in ref_norm)
+            or (ref_norm in b or b in ref_norm)
+        )
+
+    for i in range(len(result)):
+        no_i = _nama_ref(result[i], idx_no)
+        if not no_i or no_i == "-" or not _looks_like_no(no_i):
+            continue
+        kode_ref = _nama_ref(result[i], idx_kode)
+        pemegang_ref = _nama_ref(result[i], idx_pemegang) or _nama_ref(result[i], idx_rekening)
+        ref_norm = _nama_norm(pemegang_ref)
+        if not kode_ref or kode_ref == "-" or not ref_norm:
+            continue
+
+        for j in range(i - 1, -1, -1):
+            no_j = _nama_ref(result[j], idx_no)
+            if no_j != "-":
+                break
+            kode_j = _nama_ref(result[j], idx_kode)
+            if not kode_j or kode_j == "-" or kode_j != kode_ref:
+                break
+            if _nama_match(ref_norm, result[j]):
+                result[j][idx_no] = no_i
+            else:
+                break
+
+    return result
+
+
+def _split_rows_at_new_no(raw_data_rows: list[tuple], num_cols: int) -> list[tuple]:
+    """
+    Jika satu baris punya lebih dari num_cols sel dan ada sel di tengah yang berisi No baru (mis. 675),
+    pecah jadi dua baris agar 674 dan 675 terpisah (satu cluster Y kadang berisi dua entri).
+    """
+    if not raw_data_rows or num_cols < 2:
+        return raw_data_rows
+    result = []
+    for row_meta in raw_data_rows:
+        if len(row_meta) < 2:
+            result.append(row_meta)
+            continue
+        cluster_y = row_meta[0]
+        cells = list(row_meta[1] if len(row_meta) > 1 else [])
+        page = row_meta[2] if len(row_meta) > 2 else row_meta[0]
+        if len(cells) <= num_cols:
+            result.append((cluster_y, (cells + [""] * num_cols)[:num_cols], page))
+            continue
+        no0 = (cells[0] or "").strip() if _looks_like_no((cells[0] or "").strip()) else None
+        split_at = None
+        for k in range(1, len(cells)):
+            v = (cells[k] or "").strip()
+            if not v:
+                continue
+            if _looks_like_no(v) and (no0 is None or v != no0):
+                split_at = k
+                break
+            m = re.match(r"^\s*(\d{2,6})\s", v)
+            if m:
+                no_cand = m.group(1).strip()
+                if _looks_like_no(no_cand) and (no0 is None or no_cand != no0):
+                    split_at = k
+                    break
+        if split_at is None:
+            result.append((cluster_y, (cells + [""] * num_cols)[:num_cols], page))
+            continue
+        row1 = (cells[:split_at] + [""] * num_cols)[:num_cols]
+        first_cell = (cells[split_at] or "").strip()
+        m_first = re.match(r"^\s*(\d{2,6})\s+(.*)$", first_cell)
+        if m_first and _looks_like_no(m_first.group(1).strip()):
+            no_val = m_first.group(1).strip()
+            rest_first = m_first.group(2).strip()
+            row2_cells = [no_val] + ([rest_first] if rest_first else []) + list(cells[split_at + 1:])
+        else:
+            row2_cells = [first_cell] + list(cells[split_at + 1:])
+        row2 = (row2_cells + [""] * num_cols)[:num_cols]
+        result.append((cluster_y, row1, page))
+        result.append((cluster_y, row2, page))
     return result
 
 
@@ -1746,6 +2374,9 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
                     
                     raw_data_rows[row_idx] = (row_cluster_y, row_cells, row_page)
     
+    # Pecah baris yang punya > num_cols sel dan mengandung No baru di tengah (mis. 674 detail + 675 summary dalam satu cluster)
+    raw_data_rows = _split_rows_at_new_no(raw_data_rows, num_cols)
+
     # Konversi ke data_rows - langsung gunakan cells yang sudah ditempatkan ke kolom yang benar
     data_rows = []
     for row_data in raw_data_rows:
@@ -1783,11 +2414,26 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         _fix_numeric_block_by_content(normalized_row, TARGET_COLS)
         final_data_rows.append(normalized_row)
 
+    # Isi No yang hilang pada baris merge-cell secara konservatif (pakai patokan kode + kolom merge stabil)
+    final_data_rows = _fill_missing_no_by_merge_signature(final_data_rows, TARGET_COLS)
+
     # Gabungkan baris lanjutan (No "-") ke baris sebelumnya agar tidak jadi 2–3 baris terpisah
     final_data_rows = _merge_continuation_rows(final_data_rows, TARGET_COLS)
     # Rapikan Kode Efek: gabungkan baris duplikat No ketika baris pertama Kode Efek "-" dan baris kedua punya kode
     final_data_rows = _dedupe_rows_fill_kode_efek(final_data_rows, TARGET_COLS)
-    
+
+    # Baris dengan No "-" yang Nama Pemegang Saham-nya sama dengan baris No 675 → tetapkan No ke 675 (agar tidak ikut 674)
+    final_data_rows = _assign_continuation_rows_to_no_by_pemegang(final_data_rows, TARGET_COLS)
+
+    # Forward-fill Nama Emiten dalam blok (merge-cell) agar baris lanjutan punya emiten sama dengan baris pertama
+    final_data_rows = _forward_fill_emiten_in_blocks(final_data_rows, TARGET_COLS)
+    # Tetapkan No konsisten per entitas (Kode Efek + Pemegang/Rekening)
+    final_data_rows = _reassign_no_by_emiten_block(final_data_rows, TARGET_COLS)
+    # Jaga agar No tidak 'turun' di dalam satu blok Kode Efek (monoton naik)
+    final_data_rows = _enforce_monotonic_no(final_data_rows, TARGET_COLS)
+    # Hapus baris duplikat 'summary' hasil split (mis. baris ke-4 yang hanya ulang nilai merge) agar total 12 baris
+    final_data_rows = _remove_duplicate_merge_summary_rows(final_data_rows, TARGET_COLS)
+
     # KOREKSI FINAL: Pastikan Persentase (1)/(2) dan Perubahan tidak berisi teks setelah merge/dedupe
     # (karena merge/dedupe bisa mengubah data, perlu koreksi ulang)
     for row in final_data_rows:
@@ -2134,14 +2780,10 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
                 row_18[idx_perubahan_18] = "-"
             data_18[idx_row] = row_18  # Simpan perubahan
 
-        # Perubahan tidak boleh berisi nilai yang sama dengan Persentase (2) (nilai persen).
-        # Contoh: no 318 bawah — Perubahan salah berisi 11.76 yang seharusnya hanya di kolom (2).
+        # Perubahan tidak boleh berisi nilai persen (mis. 47.86 dari baris 674 summary yang salah masuk ke baris ke-4).
         val16_after = get_18(idx_perubahan_18, row_18)
-        val_pct2_18 = get_18(idx_pct2_18, row_18)
-        if (val16_after != "-" and val_pct2_18 != "-" and
-            _looks_like_percentage_value(val16_after) and
-            str(val16_after).strip() == str(val_pct2_18).strip()):
-            row_18[idx_perubahan_18] = "-"
+        if val16_after and val16_after != "-" and _looks_like_percentage_value(val16_after):
+            row_18[idx_perubahan_18] = "0"
             data_18[idx_row] = row_18
 
         # Perubahan tidak boleh berisi satu huruf (mis. "L" dari kolom Status yang salah tempat)
@@ -2149,6 +2791,32 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         if v16 and len(v16.strip()) == 1 and v16.strip().isalpha():
             row_18[idx_perubahan_18] = "-"
             data_18[idx_row] = row_18
+
+        # Persentase (2) tidak boleh berisi Jumlah Saham (angka besar)
+        val_pct2 = get_18(idx_pct2_18, row_18)
+        if val_pct2 != "-" and _looks_like_large_number(val_pct2):
+            row_18[idx_pct2_18] = "-"
+            data_18[idx_row] = row_18
+
+        # Perubahan tidak boleh minus dari J1/J2 (mis. -120 ketika J1 atau J2 = 120)
+        idx_jumlah1_18 = 11
+        idx_jumlah2_18 = 14
+        v17 = get_18(idx_perubahan_18, row_18)
+        if v17 and v17 != "-":
+            t17 = v17.replace(",", "").replace(" ", "").strip()
+            if t17.startswith("-") and t17[1:].isdigit():
+                abs17 = int(t17[1:])
+                def _p(i):
+                    w = get_18(i, row_18)
+                    if not w or w == "-":
+                        return None
+                    u = w.replace(",", "").replace(" ", "").replace(".", "").strip()
+                    if u.startswith("-"):
+                        u = u[1:]
+                    return int(u) if u.isdigit() else None
+                if abs17 == _p(idx_jumlah1_18) or abs17 == _p(idx_jumlah2_18):
+                    row_18[idx_perubahan_18] = "0"
+                    data_18[idx_row] = row_18
 
     # KOREKSI BARIS KEMBAR NO: Hanya ketika nilai di (1) baris atas sama dengan (2) baris bawah (salah kolom),
     # baru pindahkan: atas (1)=bawah(1), atas (2)=atas(1). Jangan overwrite 318 atas (11.74, 11.76) dengan bawah (11.14, 11.78).
@@ -2269,7 +2937,7 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
                     if not is_lower and (j1_u and j1_u != "-") and v in (j1_u, j2_u):
                         continue
                     large_vals_by_col.append((c, v, is_lower))
-                if c != idx_perubahan_18 and _looks_like_change_value(v) and not _looks_like_large_number(v):
+                if c != idx_perubahan_18 and _looks_like_change_value(v) and not _looks_like_large_number(v) and not _looks_like_percentage_value(v):
                     change_vals.append(v)
         # Urutkan: baris bawah dulu (termasuk baris lanjutan sama No), kolom 0-10 dulu, lalu 11-17
         large_vals_by_col.sort(key=lambda x: (0 if x[2] else 1, 0 if x[0] <= 10 else 1, x[0]))
@@ -2331,17 +2999,16 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
             filled = False
             no_lower_str = str(no_lower).strip() if no_lower not in (None, "") else ""
             for v in change_vals:
-                vstrip = (v or "").strip()
+                vstrip = v.strip()
                 if no_lower_str and vstrip == no_lower_str:
                     continue
-                if not _looks_like_change_value(vstrip):
+                if _looks_like_percentage_value(vstrip):
                     continue
-                if _looks_like_large_number(vstrip) or _looks_like_percentage_value(vstrip):
-                    continue
-                row_lower[idx_perubahan_18] = vstrip
-                data_18[i + 1] = row_lower
-                filled = True
-                break
+                if len(vstrip) <= 4 and vstrip.isdigit():
+                    row_lower[idx_perubahan_18] = vstrip
+                    data_18[i + 1] = row_lower
+                    filled = True
+                    break
             pl_upper = get_18(idx_perubahan_18, row_upper)
             upper_perubahan_empty = not pl_upper or pl_upper.strip() == "-"
             if not filled and (get_18(idx_perubahan_18, row_lower) == "-" or not get_18(idx_perubahan_18, row_lower)):
@@ -2355,7 +3022,8 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
             data_18[i + 1] = row_lower
 
     # Pass akhir: isi Jumlah Saham (1)/(2) baris bawah dari baris mana pun dalam grup No yang sama.
-    # Menangani kasus 318 ketika nilai 2,000,000 ada di baris ke-3 atau di kolom yang salah di baris ke-2.
+    # Menangani kasus 318 ketika nilai 2,000,000 ada di baris ke-3 atau di kolom yang salah di baris ke-2,
+    # tanpa mengacaukan pola periode-2-only seperti No 247 (periode 1 kosong).
     idx_no_18 = 0
     no_to_indices = {}
     for idx, row in enumerate(data_18):
@@ -2375,13 +3043,22 @@ def build_table_with_header_from_pdf(input_path: str) -> list[list[str]]:
         j2_first = get_18(idx_jumlah2_18, first_row)
         sg1_first = get_18(idx_saham_gab1_18, first_row)
         sg2_first = get_18(idx_saham_gab2_18, first_row)
+
+        # Jika seluruh grup ini jelas hanya punya data periode 2 (pola No 247: J1 pertama "-", J2/SG2 besar),
+        # jangan pernah memaksa isi Jumlah Saham (1) di baris mana pun dalam grup.
+        period1_empty_group = (
+            (not j1_first or j1_first == "-")
+            and ( (j2_first and j2_first != "-" and _looks_like_large_number(j2_first))
+                  or (sg2_first and sg2_first != "-" and _looks_like_large_number(sg2_first)) )
+        )
         for idx in indices[1:]:
             row = data_18[idx]
             j1 = get_18(idx_jumlah1_18, row)
             j2 = get_18(idx_jumlah2_18, row)
             # Baris bawah yang duplikat (nilai sama dengan baris atas) juga harus dikoreksi ke nilai sendiri (318: 2,000,000)
             is_duplicate_of_first = (j1 == j1_first and j2 == j2_first) and (j1_first != "-" or j2_first != "-")
-            need_fill_j1 = (j1 == "-" or not j1) or is_duplicate_of_first
+            # Untuk grup periode-2-only (mis. 247), jangan pernah paksa isi J1
+            need_fill_j1 = (not period1_empty_group) and ((j1 == "-" or not j1) or is_duplicate_of_first)
             need_fill_j2 = (j2 == "-" or not j2) or is_duplicate_of_first
             if not need_fill_j1 and not need_fill_j2:
                 continue
@@ -2761,58 +3438,28 @@ def _apply_raw_blue_fix_same_no_baris_bawah(
                 next_no_str = w
                 break
 
-        # Kumpulkan semua triple (angka_besar, angka_besar, perubahan) di segmen, tidak tumpang-tindih (untuk No multi-baris mis. 674).
+        # Cari triple (angka_besar, angka_besar, perubahan) di segmen yang berbeda dari baris pertama.
+        # Untuk baris bawah (mis. 318 bawah): pilih triple dengan Perubahan=0 jika ada, else triple terakhir.
+        # Rentang: i sampai i+2 harus dalam segment; sertakan sampai ujung segmen.
         seg_end = min(segment_end, len(lines))
-        i_end = min(seg_end - 2, len(lines) - 3) if len(lines) >= 3 else pos_no
-        all_triples = []
-        i = pos_no + 1
-        while i <= i_end:
+        i_end = min(seg_end - 1, len(lines) - 2) if len(lines) >= 2 else pos_no + 1
+        candidates = []
+        for i in range(pos_no + 1, i_end):
             v1, v2, v3 = (lines[i] or "").strip(), (lines[i + 1] or "").strip(), (lines[i + 2] or "").strip()
             ok1 = _looks_like_large_number(v1) and not _looks_like_percentage_value(v1)
             ok2 = _looks_like_large_number(v2) and not _looks_like_percentage_value(v2)
             ok3 = _looks_like_change_value(v3)
-            if ok1 and ok2 and ok3:
-                all_triples.append((i, v1, v2, v3))
-                i += 3
-            else:
-                i += 1
-        # Untuk kompatibilitas 2 baris (318/707): kandidat triple yang beda dari baris pertama
-        candidates = [(idx, pv) for idx, _v1, _v2, pv in all_triples if (_v1, _v2) != (j1_first, j2_first)]
+            if not ok1 or not ok2 or not ok3:
+                continue
+            if (v1, v2) != (j1_first, j2_first):
+                candidates.append((i, v3))
         triple_start = None
-        if len(indices) == 2 and candidates:
-            for i, pv in candidates:
-                if (pv or "").strip() == "0":
-                    triple_start = i
-                    break
-            if triple_start is None:
-                triple_start = candidates[-1][0]
-        # Jika ada banyak baris dan cukup triple, isi tiap baris dari triple yang sesuai (mis. 674: baris 1 = -2,500,000, baris 10 = -3,500,000)
-        n_assign = min(len(all_triples), len(indices))
-        if n_assign >= 1 and len(indices) > 2:
-            for t in range(n_assign):
-                row_idx = indices[t]
-                row = list(data_rows[row_idx])
-                while len(row) < ncols:
-                    row.append("-")
-                _, v1, v2, pv = all_triples[t]
-                if t == 0:
-                    cur_p = (row[idx_perubahan] or "").strip() or "-"
-                    if cur_p == "-" or not cur_p:
-                        row[idx_perubahan] = (pv or "").strip() or "-"
-                else:
-                    row[idx_j1] = v1
-                    row[idx_j2] = v2
-                    row[idx_perubahan] = (pv or "").strip()
-                    if (pv or "").strip() == "0" and v1 == v2:
-                        row[idx_j1] = "-"
-                    if idx_saham_gab1 < ncols:
-                        row[idx_saham_gab1] = (first_row[idx_saham_gab1] or "").strip() or "-"
-                    if idx_saham_gab2 < ncols:
-                        row[idx_saham_gab2] = (first_row[idx_saham_gab2] or "").strip() or "-"
-                data_rows[row_idx] = row
-            if debug_ref is not None and no == "707":
-                debug_ref["707"] = {"path": "multi-triple", "n_triples": len(all_triples), "n_indices": len(indices)}
-            continue
+        for i, pv in candidates:
+            if (pv or "").strip() == "0":
+                triple_start = i
+                break
+        if triple_start is None and candidates:
+            triple_start = candidates[-1][0]
         if triple_start is None:
             # Fallback: baris bawah hanya punya satu nilai (mis. 487 di Jumlah Saham (2)), baris atas Perubahan = -nilai
             # Hanya nilai 3+ digit (100-9999) agar tidak ambil "2", "19" dari alamat (Lantai 2, Ruang 210, dll.)
@@ -2822,24 +3469,18 @@ def _apply_raw_blue_fix_same_no_baris_bawah(
                     w = (lines[i] or "").strip()
                     if not w or w == "-":
                         continue
-                    # Izinkan angka negatif (mis. -2,500,000)
-                    w_clean = w.replace(",", "").replace(" ", "").replace(".", "", 1)
-                    if w_clean.startswith("-"):
-                        w_clean = w_clean[1:]
-                    if not w_clean.isdigit():
+                    w_normalized = w.replace(",", "").replace(" ", "").replace(".", "", 1)
+                    if not w_normalized.isdigit():
                         continue
-                    w_norm = w.replace(",", "").replace(" ", "").replace(".", "")
                     try:
-                        v = int(w_norm)
+                        v = int(w_normalized)
                     except ValueError:
                         continue
                     if _looks_like_large_number(w) or _looks_like_percentage_value(w):
                         continue
-                    if not _looks_like_change_value(w):
-                        continue
-                    # Nilai Perubahan wajar: 0, kecil (100-9999), atau negatif (mis. -2500000)
-                    if v == 0 or 100 <= abs(v) <= 9999 or (abs(v) >= 100000 and abs(v) <= 10**12):
-                        out_list.append((i, w))
+                    # Minimal 3 digit (100-9999) untuk Perubahan/J2 yang wajar; hindari 0, 2, 19 dari teks
+                    if 100 <= v <= 9999:
+                        out_list.append((i, str(v)))
                 return out_list
 
             change_like_in_segment = _collect_change_like(pos_no + 1, seg_end)

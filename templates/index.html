@@ -564,7 +564,14 @@
         let isBreak = false;
         if (r > 0) {
           if (isNumericNo(no) && lastNumericNo !== null && no !== lastNumericNo) {
-            if (!(prevNo === "-" && kode && kode === prevKode)) {
+            var groupHasSummaryNo = false;
+            for (var g = groupStart; g < r; g++) {
+              if ((dataRows[g][0] || "").toString().trim() === lastNumericNo) {
+                groupHasSummaryNo = true;
+                break;
+              }
+            }
+            if (groupHasSummaryNo || !(prevNo === "-" && kode && kode === prevKode)) {
               isBreak = true;
             }
           } else if (no === "-" && kode && prevKode && kode !== prevKode) {

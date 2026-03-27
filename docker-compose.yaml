@@ -8,11 +8,11 @@ networks:
 
 volumes:
   vol-redis-db:
-    name: vol-redis-db-madarussholah
+    name: vol-redis-db-cbtmadrasahbatam
 
 services:
-  redis-db-madarussholah:
-      container_name: redis-db-madarussholah
+  redis-db-cbtmadrasahbatam:
+      container_name: redis-db-cbtmadrasahbatam
       image: redis:7.2.5
       restart: always
       networks:
@@ -20,8 +20,8 @@ services:
         - net-myexams6
       volumes:
         - vol-redis-db:/data
-  myexams-madarussholah:
-    container_name: myexams-madarussholah
+  myexams-cbtmadrasahbatam:
+    container_name: myexams-cbtmadrasahbatam
     image: registry.myexams.web.id/myexams:1.20.9-origin
     restart: always
     deploy:
@@ -34,14 +34,14 @@ services:
       - net-myexams6
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.myexams-madarussholah.rule=Host(`madarussholah.myexams.web.id`)"
-      - "traefik.http.routers.myexams-madarussholah.entrypoints=websecure"
-      - "traefik.http.routers.myexams-madarussholah.tls.certresolver=resolver"
-      - "traefik.http.services.myexams-madarussholah.loadbalancer.server.port=80"
+      - "traefik.http.routers.myexams-cbtmadrasahbatam.rule=Host(`cbtmadrasahbatam.com`)"
+      - "traefik.http.routers.myexams-cbtmadrasahbatam.entrypoints=websecure"
+      - "traefik.http.routers.myexams-cbtmadrasahbatam.tls.certresolver=resolver"
+      - "traefik.http.services.myexams-cbtmadrasahbatam.loadbalancer.server.port=80"
     volumes:
       - ./storage:/app/storage
     depends_on:
-      - redis-db-madarussholah
+      - redis-db-cbtmadrasahbatam
     external_links:
       - mongo-db6:mongo-db-service
     environment:
@@ -55,6 +55,6 @@ services:
       - BACKDOOR_USER_NAME=MyExams8381*
       - BACKDOOR_USER_PASSWORD=MyExams8381*
       # Konfigurasi database.
-      - REDIS_CONNECTION=redis://redis-db-madarussholah:6379/0
-      - MONGO_CONNECTION=mongodb://mongo-db-service:27017/madarussholah
-      # - MONGO_CONNECTION=mongodb://user:pass@<host>:27017/madarussholah?authMechanism=DEFAULT
+      - REDIS_CONNECTION=redis://redis-db-cbtmadrasahbatam:6379/0
+      - MONGO_CONNECTION=mongodb://mongo-db-service:27017/cbtmadrasahbatam
+      # - MONGO_CONNECTION=mongodb://user:pass@<host>:27017/cbtmadrasahbatam?authMechanism=DEFAULT
